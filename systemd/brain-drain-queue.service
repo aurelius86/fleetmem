@@ -1,0 +1,11 @@
+[Unit]
+Description=Brain: conservative Approval-2.0 queue drain — auto-reject junk, digest the rest to the managers
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=brain
+WorkingDirectory=/opt/brain-db/db
+EnvironmentFile=-/opt/brain-db/db/brain.env
+ExecStart=/usr/bin/python3 /opt/brain-db/db/drain_queue.py

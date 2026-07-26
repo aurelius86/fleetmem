@@ -1,0 +1,43 @@
+{
+  "_comment": "Embedding-model pin. The reproducibility seed: a rebuild re-pulls the exact Ollama digest and asserts it; every memory row stamps embed_model so a model swap is detectable.",
+  "pinned_at": "2026-06-29",
+  "schema_vector_dim": 1024,
+  "ollama_endpoint": "http://127.0.0.1:11434",
+  "ollama_embed_options": {
+    "num_ctx": 8192,
+    "truncate": true,
+    "_why": "Ollama /api/embed silently truncates at ~512 unless num_ctx is set explicitly (ollama/ollama#7008). Root cause of the historical 'nomic 2048 cap' bug. ALWAYS send these."
+  },
+  "primary": {
+    "model": "bge-m3:latest",
+    "ollama_digest_sha256": "b5ebf672121b4b1229f200288e45a7420802c0a161312004546c2af020521c66",
+    "size_bytes": 1157672693,
+    "_digest_history": "Re-pinned 2026-07-17 : bge-m3:latest was re-pulled on the embedding host on 2026-07-11 (modified_at 2026-07-11T22:12:57+04:00), which recomputed the manifest digest 7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab -> b5ebf672121b4b1229f200288e45a7420802c0a161312004546c2af020521c66 (size +88 B). Same weights: param_size 566.70M, quant F16, dim 1024, ctx 8192 all unchanged -> existing 1024-dim embeddings stay valid, NO re-embed needed. Manifest-level change only. Original pin (2026-06-29) digest preserved in this note.",
+    "param_size": "566.70M",
+    "quantization": "F16",
+    "dim": 1024,
+    "max_context_tokens": 8192,
+    "family": "bert (XLM-RoBERTa base)",
+    "license": "MIT",
+    "multilingual": true,
+    "query_prefix": null,
+    "doc_prefix": null,
+    "_note": "No asymmetric prefix required (lowest-footgun). Only the DENSE vector is used; keyword side = Postgres FTS."
+  },
+  "challenger": {
+    "model": "qwen3-embedding:0.6b",
+    "ollama_digest_sha256": "ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d",
+    "size_bytes": 639150858,
+    "param_size": "595.78M",
+    "quantization": "Q8_0",
+    "dim": 1024,
+    "max_context_tokens": 32768,
+    "family": "qwen3",
+    "license": "Apache-2.0",
+    "multilingual": true,
+    "query_prefix": "Instruct: {task}\\nQuery: {query}",
+    "doc_prefix": null,
+    "_note": "Same dim (1024) as primary -> A/B swappable in the vector(1024) column with zero schema change. Mind the query-side Instruct prefix (omitting costs ~1-5% recall; index/query usage must match)."
+  },
+  "decision": "Build on bge-m3. Big Step 2 benchmarks both on the golden-query set against today's recall baseline; the winner becomes the final pin. Verified 2026-06-29: both embed at 1024-dim with num_ctx=8192."
+}

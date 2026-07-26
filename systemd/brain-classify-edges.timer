@@ -1,0 +1,10 @@
+[Unit]
+Description=Brain: classify untyped memory_relation edges (scheduled)
+
+[Timer]
+OnCalendar=*-*-* 02:10:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

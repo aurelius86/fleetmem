@@ -1,0 +1,10 @@
+[Unit]
+Description=Brain: prune action_log + session_recall past retention (scheduled)
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

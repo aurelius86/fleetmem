@@ -1,0 +1,272 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Brain — Memory Approval</title>
+<style>
+@import url('/vendor/fonts.css');
+:root{--bg:#07080d;--bg2:#0d101a;--panel:rgba(18,22,34,0.72);--panel-solid:#11151f;
+--line:rgba(255,255,255,0.08);--line2:rgba(255,255,255,0.14);
+--ink:#e7ecf5;--mut:#8b93a7;--hint:#5b6478;
+--cyan:#22d3ee;--violet:#c084fc;--amber:#fbbf24;
+--mono:'JetBrains Mono',ui-monospace,monospace;--sans:'Inter',system-ui,sans-serif;}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}
+body{min-height:100vh;background-image:linear-gradient(transparent 0 31px,rgba(255,255,255,.022) 31px 32px),linear-gradient(90deg,transparent 0 31px,rgba(255,255,255,.022) 31px 32px);background-size:32px 32px,32px 32px;animation:griddrift 60s linear infinite}
+@keyframes griddrift{from{background-position:0 0,0 0}to{background-position:32px 32px,32px 32px}}
+.ambient{position:fixed;inset:0;pointer-events:none;z-index:0;background:radial-gradient(900px 500px at 12% -8%,rgba(34,211,238,.13),transparent 60%),radial-gradient(900px 520px at 95% 110%,rgba(192,132,252,.13),transparent 60%);animation:breathe 9s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.6}50%{opacity:1}}
+@keyframes fadeup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.78)}}
+header{position:sticky;top:0;z-index:5;padding:14px 22px;border-bottom:1px solid var(--line);background:rgba(8,10,16,.6);backdrop-filter:blur(8px)}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-weight:500;letter-spacing:.5px;font-size:15px}
+.brand b{color:var(--cyan);font-weight:500}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--cyan);box-shadow:0 0 10px var(--cyan),0 0 22px rgba(34,211,238,.55);animation:pulse 2.4s ease-in-out infinite}
+.savedot{font-family:var(--mono);font-size:11.5px;color:var(--hint);margin-left:auto}
+.savedot.on{color:var(--cyan)}
+.savedot.err{color:var(--amber)}
+.sub{color:var(--mut);font-size:13px;margin-top:8px}
+.tabs{display:flex;gap:6px;margin-top:12px}
+.tab{font-family:var(--mono);font-size:12.5px;padding:7px 13px;border:1px solid transparent;border-radius:9px;cursor:pointer;color:var(--mut);background:transparent;transition:.15s}
+.tab:hover{color:var(--ink);background:rgba(255,255,255,.04)}
+.tab.on{color:var(--ink);background:rgba(255,255,255,.08);border-color:var(--line2)}
+.tab b{color:var(--cyan)}
+main{position:relative;z-index:1;padding:16px 22px 110px;max-width:900px;margin:0 auto}
+.card{background:var(--panel);backdrop-filter:blur(6px);border:1px solid var(--line);border-left:3px solid var(--line2);border-radius:12px;
+padding:14px 16px;margin:10px 0;animation:fadeup .25s ease both}
+.card.pending{border-left-color:var(--violet)}.card.approved{border-left-color:var(--cyan)}
+.card.rejected{border-left-color:var(--hint)}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.slug{font-weight:600}.type{font-family:var(--mono);font-size:10.5px;color:var(--mut);border:1px solid var(--line);border-radius:6px;padding:1px 7px;margin-left:8px}
+.trust{font-family:var(--mono);font-size:10px;border-radius:6px;padding:1px 7px;margin-left:6px;border:1px solid var(--line)}
+.trust.trusted{color:var(--cyan)}.trust.quarantine{color:var(--amber)}
+.why{font-size:12px;color:var(--violet);margin:4px 0}
+.esc{font-size:12px;color:var(--amber);margin:5px 0;font-weight:600;border-left:2px solid var(--amber);padding-left:7px}
+.desc{margin:6px 0 2px}.fact{color:var(--mut);font-size:13px;white-space:pre-wrap}
+.src{color:var(--hint);font-family:var(--mono);font-size:11px;margin-top:6px}
+.verdict{color:var(--hint);font-family:var(--mono);font-size:11.5px;margin-top:8px}
+.btns{display:flex;gap:6px;flex-shrink:0}
+.b{font-family:var(--mono);border:1px solid var(--line);background:rgba(255,255,255,.04);color:var(--ink);border-radius:8px;padding:6px 11px;cursor:pointer;font-size:12.5px;transition:.15s}
+.b:hover{border-color:var(--line2)}
+.b.on.keep{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 12px rgba(34,211,238,.25)}
+.b.on.drop{border-color:var(--amber);color:var(--amber)}
+.cm{display:none;width:100%;margin-top:8px;background:rgba(0,0,0,.35);color:var(--ink);
+border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:13px var(--sans)}
+.cm.show{display:block}
+.play{display:none;position:fixed;inset:0;background:rgba(4,6,10,.92);backdrop-filter:blur(4px);z-index:20;padding:36px 20px;overflow:auto}
+.play.on{display:flex;flex-direction:column;align-items:center}
+.pcard{background:var(--panel-solid);border:1px solid var(--line2);border-radius:16px;padding:26px;max-width:680px;width:100%;margin-top:20px;animation:fadeup .2s ease both}
+.pprog{font-family:var(--mono);color:var(--mut);font-size:12.5px}
+.pbig{font-size:21px;font-weight:600;margin:12px 0}
+.pset{font-size:12px;color:var(--mut);margin-top:10px}
+.pcm{width:100%;margin-top:14px;background:rgba(0,0,0,.4);color:var(--ink);border:1px solid var(--violet);
+border-radius:9px;padding:9px 12px;font:14px var(--sans)}
+.pkeys{margin-top:22px;display:flex;gap:16px;flex-wrap:wrap;color:var(--mut);font-size:13px;font-family:var(--mono)}
+.pkeys kbd{background:#04060a;border:1px solid var(--line2);border-bottom-width:2px;border-radius:6px;
+padding:2px 9px;color:var(--ink);font-family:var(--mono);margin-right:5px}
+.bar{position:fixed;bottom:0;left:0;right:0;z-index:6;background:rgba(8,10,16,.72);backdrop-filter:blur(8px);border-top:1px solid var(--line);
+padding:12px 22px;display:flex;justify-content:space-between;align-items:center}
+.exp{font-family:var(--mono);background:var(--violet);color:#1a1030;border:0;font-weight:600;border-radius:9px;padding:10px 16px;cursor:pointer}
+.pager{display:flex;gap:12px;align-items:center;justify-content:center;margin:18px 0 6px}
+.b:disabled{opacity:.35;cursor:default}
+.psum{font-family:var(--mono);font-size:11.5px;color:var(--hint)}
+</style></head><body>
+<div class="ambient"></div>
+<header>
+ <div class="brand"><span class="dot"></span>brain · <b>memory approval</b><span class="savedot" id="savedot">● live</span></div>
+ <div style="display:flex;gap:14px;margin-top:10px;font-family:var(--mono);font-size:12.5px">
+  <a href="/approve" style="color:var(--cyan);text-decoration:none">🙋 memory approval</a>
+  <a href="/needs-you" style="color:var(--mut);text-decoration:none">🔔 needs you</a>
+  <a href="/explorer" style="color:var(--mut);text-decoration:none">🗂️ explorer</a>
+  <a href="/enroll-admin" style="color:var(--mut);text-decoration:none">🔑 enrollment &amp; access</a>
+  <a href="/audit-log" style="color:var(--mut);text-decoration:none">📜 audit log</a></div>
+ <div class="sub">Manager proposal queue. <b>🗂️ Proposal queue</b> = pending memory proposals · <b>🔗 Edge types</b> = typed-relation proposals · <b>🧪 Self-review drafts</b> = agents' own captures awaiting graduate/delete (the authoring agent normally self-reviews these). Only what genuinely needs the operator lives on the <b>🔔 needs you</b> page (Keep ⇒ approved · Drop ⇒ rejected). Each click writes straight to the brain.</div>
+ <div class="tabs" id="tabs"></div></header>
+<main id="list"></main>
+<div class="bar"><div id="tally" class="sub"></div>
+ <div style="display:flex;gap:8px">
+  <button class="exp" style="background:transparent;color:var(--mut);border:1px solid var(--line)" onclick="startPlay()">▶ Play (one by one)</button></div></div>
+<div id="play" class="play"></div>
+<script>
+// Each item is a brain `proposal` row: {id,name,mtype,proposed_body,description,status,
+// origin_channel,trust,author_body,created_at,decided_by,decided_at,reason}. status is one of
+// pending|approved|rejected. The decision is binary, so the UI is Keep(approved)/Drop(rejected);
+// any typed comment rides along as the decision's `reason`. Decided rows are read-only (the brain
+// API only decides pending rows). `note` holds an unsaved comment for a still-pending item.
+const DATA=__QUEUE__;
+// A PENDING proposal's `reason` is the GATE's escalation reason (why the deterministic auto-keep
+// gate refused to auto-keep it and needs a human); a DECIDED proposal's `reason` is the human's
+// own decision note. Keep them DISTINCT: surface the gate reason read-only (see whyEsc), and start
+// the human comment box EMPTY so a reviewer's note isn't pre-filled with the gate's wording.
+DATA.forEach(c=>{c.gate=(c.status==='pending')?(c.reason||''):'';c.note=''});
+// Map the gate's terse escalation tokens -> a plain-English "why is this waiting for me" line
+// (mirrors the 4 escalation cases in the approved promotion design).
+const ESC={untrusted:'untrusted provenance — external/tool-output/file, not a trusted channel (the security keystone: an attacker could have planted this)',
+           sensitive:'sensitive topic — medical / financial / secret-adjacent',
+           secret:'secret-adjacent — never auto-kept',
+           conflict:'conflicts with an existing note — a human must pick the winner',
+           uncorroborated:'no trusted first-party anchor found for the claim',
+           lesson:'matched a poison-defense lesson (a previously-rejected pattern)'};
+function whyEsc(r){if(!r)return '';return r.split(/[,;]\s*/).map(t=>{const k=t.trim().toLowerCase();for(const key in ESC){if(k.indexOf(key)>=0)return ESC[key];}return t.trim();}).filter(Boolean).join(' · ');}
+// Provisional items: agents' own working memory (+ anchored tables) awaiting graduate/delete.
+// {id,name,description,body,author_body,origin_channel,created_at,expires_at,self_authored,tables:[{name,columns}]}
+const PROV=__PROVISIONAL__;
+// editable working copies ( — graduation is curation: rename + amend before it goes permanent)
+PROV.forEach(p=>{p.pnote='';p.ename=p.name||'';p.edesc=p.description||'';p.ebody=p.body||''});
+// queued edge-type proposals (infra relation classifier). approve => relates_to becomes the typed
+// edge; reject => keep relates_to. {id,src_id,dst_id,proposed_type,proposed_quote,proposed_at,src_name,dst_name}
+const EDGES=__EDGEPROPOSALS__;
+let tab='pending';
+let apPage=0; const AP_PAGE=25;                    // paginate the queue (all rows are injected in-page)
+function apGo(p){apPage=p;render();}
+function pagerHtml(total){                          // prev/next + range; empty when it fits on one page
+ const pages=Math.max(1,Math.ceil(total/AP_PAGE));
+ if(apPage>=pages)apPage=pages-1; if(apPage<0)apPage=0;
+ if(total<=AP_PAGE) return '';
+ const from=apPage*AP_PAGE;
+ return `<div class="pager"><button class="b" ${apPage<=0?'disabled':''} onclick="apGo(${apPage-1})">‹ prev</button>`
+  +`<span class="psum">${from+1}–${Math.min(from+AP_PAGE,total)} of ${total} · page ${apPage+1}/${pages}</span>`
+  +`<button class="b" ${from+AP_PAGE>=total?'disabled':''} onclick="apGo(${apPage+1})">next ›</button></div>`;
+}
+const tabs=[['pending','🗂️ Proposal queue'],['edges','🔗 Edge types'],['provisional','🧪 Self-review drafts'],['approved','✅ Approved'],['rejected','🗑️ Rejected']];
+function counts(s){return s==='provisional'?PROV.length:s==='edges'?EDGES.length:DATA.filter(c=>c.status===s).length}
+function esc(s){return (s||'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]))}
+function shortDate(s){if(!s)return '';return String(s).replace('T',' ').slice(0,16)}
+let saveT=null;
+function flash(ok,msg){const d=document.getElementById('savedot');d.textContent=ok?'● saved':('▲ '+(msg||'save failed'));
+ d.className='savedot'+(ok?' on':' err');clearTimeout(saveT);
+ saveT=setTimeout(()=>{d.textContent='● live';d.className='savedot';},ok?1400:3600);}
+// Send a decision to the brain. On success the row flips locally to its decided status.
+function decide(c,decision){
+ return fetch('/approve-save',{method:'POST',headers:{'content-type':'application/json'},
+  body:JSON.stringify({id:c.id,decision:decision,reason:c.note||''})})
+  .then(r=>r.json().then(j=>({ok:r.ok&&j.ok,j})))
+  .then(({ok,j})=>{if(ok){c.status=decision;c.reason=c.note||'';c.decided_by='(you · dashboard)';c.decided_at='just now';flash(true);}
+   else flash(false,(j&&j.error)||'denied');return ok;})
+  .catch(e=>{flash(false,'offline');return false;});
+}
+function set(i,s){const decision=s==='keep'?'approved':'rejected';decide(DATA[i],decision).then(()=>render());}
+function tog(i){const e=document.getElementById('cm'+i);e.classList.toggle('show');if(e.classList.contains('show'))e.focus();}
+// Provisional: graduate (-> trusted/permanent, anchored tables promoted) or delete (-> gone + tables dropped).
+function decideProv(i,decision){const p=PROV[i];
+ const payload={kind:'provisional',id:p.id,decision:decision,reason:p.pnote||''};
+ if(decision==='graduate'){payload.name=p.ename||p.name;payload.description=p.edesc||'';payload.body=(p.ebody!=null?p.ebody:p.body);}
+ fetch('/approve-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)})
+  .then(r=>r.json().then(j=>({ok:r.ok&&j.ok,j})))
+  .then(({ok,j})=>{if(ok){PROV.splice(i,1);flash(true);}else flash(false,(j&&j.error)||'denied');render();})
+  .catch(()=>{flash(false,'offline');});}
+function renderProv(){
+ const total=PROV.length, pages=Math.max(1,Math.ceil(total/AP_PAGE));   // paginate provisional
+ if(apPage>=pages)apPage=pages-1; if(apPage<0)apPage=0;
+ const pageItems=PROV.map((p,i)=>[p,i]).slice(apPage*AP_PAGE,apPage*AP_PAGE+AP_PAGE);   // keep original i for handlers
+ const banner=`<div class="card" style="border-left-color:var(--violet)"><div class="why" style="margin:0">🧪 Self-review drafts — agents' own clean autolearn captures (v2), <b>not</b> manager approvals. The authoring agent normally graduates (→ shared) or deletes these.</div></div>`;   //
+ document.getElementById('list').innerHTML=banner+(pageItems.map(([p,i])=>`
+  <div class="card idk">
+   <div class="row"><div>
+     <span class="slug">${esc(p.name)||'(provisional)'}</span>
+     <span class="type">${esc(p.author_body)} · ${esc(p.origin_channel||'?')} · expires ${esc(shortDate(p.expires_at))}</span></div>
+    <div class="btns">
+     <button class="b keep" onclick="decideProv(${i},'graduate')">✓ Graduate</button>
+     <button class="b drop" onclick="decideProv(${i},'delete')">✕ Delete</button>
+    </div></div>
+   ${(p.tables&&p.tables.length)?`<div class="src">📋 graduates/drops with this: ${p.tables.map(t=>esc(t.name)+' ('+(t.columns||[]).map(esc).join(', ')+')').join(' · ')}</div>`:''}
+   <div class="pset" style="margin-top:8px">curate before graduating — rename + amend (date-stamp snapshots):</div>
+   <input class="cm show" placeholder="name…" value="${esc(p.ename||'')}" oninput="PROV[${i}].ename=this.value">
+   <input class="cm show" placeholder="description…" value="${esc(p.edesc||'')}" oninput="PROV[${i}].edesc=this.value">
+   <textarea class="cm show" rows="6" placeholder="body…" oninput="PROV[${i}].ebody=this.value">${esc(p.ebody||'')}</textarea>
+   <input class="cm show" placeholder="reason for the decision (audit)…" value="${esc(p.pnote||'')}" oninput="PROV[${i}].pnote=this.value">
+  </div>`).join('')||'<p class=sub>no provisional items 🎉</p>')+pagerHtml(total);
+ document.getElementById('tally').textContent=`${PROV.length} self-review draft(s) awaiting graduate / delete`;
+}
+// approve => relates_to becomes proposed_type; reject => keep relates_to. Writes via /approve-save {kind:'edge'}.
+function decideEdge(i,decision){const e=EDGES[i];
+ fetch('/approve-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({kind:'edge',id:e.id,decision:decision})})
+  .then(r=>r.json().then(j=>({ok:r.ok&&j.ok,j})))
+  .then(({ok,j})=>{if(ok){EDGES.splice(i,1);flash(true);}else flash(false,(j&&j.error)||'denied');render();})
+  .catch(()=>{flash(false,'offline');});}
+function renderEdges(){
+ const total=EDGES.length, pages=Math.max(1,Math.ceil(total/AP_PAGE));
+ if(apPage>=pages)apPage=pages-1; if(apPage<0)apPage=0;
+ const pageItems=EDGES.map((e,i)=>[e,i]).slice(apPage*AP_PAGE,apPage*AP_PAGE+AP_PAGE);
+ document.getElementById('list').innerHTML=(pageItems.map(([e,i])=>`
+  <div class="card pending">
+   <div class="row"><div>
+     <span class="slug">${esc(e.src_name)}</span> <span class="type">${esc(e.proposed_type)} →</span> <span class="slug">${esc(e.dst_name)}</span>
+     ${e.proposed_quote?`<div class="why">↳ ${esc(e.proposed_quote)}</div>`:''}</div>
+    <div class="btns">
+     <button class="b keep" onclick="decideEdge(${i},'approve')">✓ Approve</button>
+     <button class="b drop" onclick="decideEdge(${i},'reject')">✕ Reject</button>
+    </div></div>
+   <div class="src">proposed ${esc(shortDate(e.proposed_at))}</div>
+  </div>`).join('')||'<p class=sub>no edge-type proposals 🎉</p>')+pagerHtml(total);
+ document.getElementById('tally').textContent=`${EDGES.length} edge-type proposal(s) awaiting approve / reject`;
+}
+function render(){
+ document.getElementById('tabs').innerHTML=tabs.map(([k,l])=>
+  `<div class="tab ${k===tab?'on':''}" onclick="tab='${k}';apPage=0;render()">${l} <b>${counts(k)}</b></div>`).join('');
+ if(tab==='provisional'){renderProv();return;}
+ if(tab==='edges'){renderEdges();return;}
+ const items=DATA.map((c,i)=>[c,i]).filter(([c])=>c.status===tab);
+ const pend=tab==='pending';
+ const total=items.length, pages=Math.max(1,Math.ceil(total/AP_PAGE));   // clamp + slice to the page
+ if(apPage>=pages)apPage=pages-1; if(apPage<0)apPage=0;
+ const pageItems=items.slice(apPage*AP_PAGE,apPage*AP_PAGE+AP_PAGE);
+ document.getElementById('list').innerHTML=(pageItems.map(([c,i])=>`
+  <div class="card ${esc(c.status)}">
+   <div class="row"><div>
+     <span class="slug">${esc(c.name)||'(no name)'}</span><span class="type">${esc(c.mtype||'?')}</span>
+     ${c.trust?`<span class="trust ${esc(c.trust)}">${esc(c.trust)}</span>`:''}
+     ${c.description?`<div class="why">↳ ${esc(c.description)}</div>`:''}
+     ${(pend&&c.gate)?`<div class="esc">⚠ escalated — ${esc(whyEsc(c.gate))}</div>`:''}</div>
+    ${pend?`<div class="btns">
+     <button class="b keep" onclick="set(${i},'keep')">✓ Keep</button>
+     <button class="b drop" onclick="set(${i},'drop')">✕ Drop</button>
+     <button class="b" onclick="tog(${i})">💬 Comment</button>
+    </div>`:''}</div>
+   <div class="fact">${esc(c.proposed_body)||'<i style=color:#64748b>no body</i>'}</div>
+   <div class="src">${esc(c.author_body||'?')} · ${esc(c.origin_channel||'?')} · ${esc(shortDate(c.created_at))}</div>
+   ${pend?`<input class="cm ${c.note?'show':''}" id="cm${i}" placeholder="reason (saved with your Keep/Drop)…" value="${esc(c.note||'')}" oninput="DATA[${i}].note=this.value">`
+        :`<div class="verdict">${c.status==='approved'?'✓ approved':'✕ rejected'} by ${esc(c.decided_by||'?')} · ${esc(shortDate(c.decided_at))}${c.reason?' · “'+esc(c.reason)+'”':''}</div>`}
+  </div>`).join('')||'<p class=sub>nothing here 🎉</p>')+pagerHtml(total);
+ const decided=counts('approved')+counts('rejected');
+ document.getElementById('tally').textContent=`${counts('pending')} pending · ${counts('approved')} approved · ${counts('rejected')} rejected · ${decided} decided of ${DATA.length}`;
+}
+let playing=false,pidx=0,plist=[];
+function startPlay(){
+ plist=DATA.map((c,i)=>i).filter(i=>DATA[i].status==='pending');
+ if(!plist.length){alert('Nothing pending to play.');return;}
+ pidx=0;playing=true;document.getElementById('play').classList.add('on');playRender();}
+function endPlay(){playing=false;document.getElementById('play').classList.remove('on');render();}
+function pnav(n){pidx=Math.max(0,Math.min(plist.length,pidx+n));playRender();}
+function pdecide(decision){const c=DATA[plist[pidx]];decide(c,decision).then(ok=>{if(ok)pnav(1);});}
+function playRender(){
+ const el=document.getElementById('play');
+ if(pidx>=plist.length){el.innerHTML=`<div class="pcard" style="text-align:center">
+   <div class="pbig">✓ Done with this set</div>
+   <div class="pset">${plist.length} reviewed · all saved to the brain. Press <kbd>Esc</kbd> to go back.</div></div>`;return;}
+ const i=plist[pidx],c=DATA[i];
+ el.innerHTML=`<div class="pcard">
+  <div class="pprog">${pidx+1} / ${plist.length} · pending${c.description?` · <b style="color:var(--violet)">${esc(c.description)}</b>`:''}</div>
+  <div class="pbig">${esc(c.name)}</div>
+  <div class="fact">${esc(c.proposed_body)}</div>
+  <div class="src">${esc(c.mtype||'?')} · ${esc(c.author_body||'?')} · ${esc(c.origin_channel||'?')}${c.trust?' · '+esc(c.trust):''}</div>
+  ${c.gate?`<div class="esc">⚠ escalated — ${esc(whyEsc(c.gate))}</div>`:''}
+  <input class="pcm" id="pcm" placeholder="press C to add a reason…" value="${esc(c.note||'')}" oninput="DATA[${i}].note=this.value">
+  <div class="pkeys"><span><kbd>K</kbd>Keep (approve)</span>
+   <span><kbd>D</kbd>Drop (reject)</span><span><kbd>C</kbd>Comment</span>
+   <span><kbd>←</kbd><kbd>→</kbd>Move</span><span><kbd>Esc</kbd>Exit</span></div></div>`;
+}
+document.addEventListener('keydown',e=>{
+ if(!playing)return;
+ if(document.activeElement&&document.activeElement.id==='pcm'){
+  if(e.key==='Enter'){e.preventDefault();document.activeElement.blur();}
+  else if(e.key==='Escape'){e.preventDefault();document.activeElement.blur();}
+  return;}
+ const k=e.key.toLowerCase();
+ if(k==='k'){e.preventDefault();pdecide('approved');}
+ else if(k==='d'){e.preventDefault();pdecide('rejected');}
+ else if(k==='c'){e.preventDefault();const f=document.getElementById('pcm');if(f)f.focus();}
+ else if(e.key==='ArrowRight'||k===' '){e.preventDefault();pnav(1);}
+ else if(e.key==='ArrowLeft'){e.preventDefault();pnav(-1);}
+ else if(e.key==='Escape'){e.preventDefault();endPlay();}
+});
+render();
+</script></body></html>

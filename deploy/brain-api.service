@@ -1,0 +1,23 @@
+# /etc/systemd/system/brain-api.service on the brain host (brain-db).
+# Runs the governance API (Flask via gunicorn) bound to localhost; nginx fronts it with mTLS.
+[Unit]
+Description=Brain governance API (Wave 1)
+After=postgresql.service network.target
+Wants=postgresql.service
+
+[Service]
+User=brain
+Group=brain
+EnvironmentFile=-/opt/brain-db/brain.env
+WorkingDirectory=/opt/brain-db/db
+ExecStart=/usr/bin/python3 -m gunicorn --bind 127.0.0.1:5000 --workers 2 --timeout 120 api:app
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/brain-db
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

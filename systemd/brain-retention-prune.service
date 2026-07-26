@@ -1,0 +1,11 @@
+[Unit]
+Description=Brain: prune action_log + session_recall past retention
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=brain
+WorkingDirectory=/opt/brain-db/db
+EnvironmentFile=-/opt/brain-db/db/brain.env
+ExecStart=/usr/bin/python3 /opt/brain-db/db/prune_retention.py

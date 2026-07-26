@@ -1,0 +1,5 @@
+[
+  {"q": "how do agents authenticate to the brain", "expect": "auth_mtls_plus_token", "kind": "conceptual"},
+  {"q": "where are private keys generated and do they leave the host", "expect": "keys_stay_on_agent", "kind": "conceptual"},
+  {"q": "what decides which agent can read a given memory", "expect": "readers_and_sensitivity", "kind": "conceptual"}
+]

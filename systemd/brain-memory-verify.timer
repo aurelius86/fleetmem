@@ -1,0 +1,10 @@
+[Unit]
+Description=Brain: Ed25519 signature tamper check + manager alert (scheduled)
+
+[Timer]
+OnCalendar=*-*-* 05:10:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

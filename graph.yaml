@@ -1,0 +1,78 @@
+# Brain knowledge-graph config — the primary knobs for a deployment.
+# BOX-READY: a new install changes THIS file, not code. Missing/partial file => code falls back
+# to safe defaults (see apply.py _DEFAULT_ONTOLOGY). Self-contained: Ollama is the only external
+# dependency.
+
+ollama:
+  endpoint: "http://127.0.0.1:11434/api/generate"   # local Ollama; override in brain.env
+  model: "qwen3:30b-a3b-instruct-2507-q4_K_M"          # local generative LLM; matches api.py rerank
+  timeout: 180                                         # seconds per classify call (offline; big notes are slow — CPU classify ~110s)
+
+ontology:
+  default: "relates_to"        # the generic bucket; ~85% of our links, and the safe fallback
+  # Seed set (data-earned from the 258-note corpus, 2026-07-02). OPEN + extensible: add a new
+  # domain's types here (accounting: invoiced_to/paid_by; archiving: archived_in/retained_until)
+  # and the classifier picks them up with ZERO code/schema change.
+  types:
+    - relates_to        # generic association / "see also" (default + fallback)
+    - supersedes        # this note replaces / updates the target
+    - conflicts_with    # this note contradicts the target
+    - accessed_via      # reached through / proxied by / fronted by (our signature infra relation)
+    - runs_on           # hosted on / lives on
+    - depends_on        # requires the target to function
+    - uses              # uses / integrates with / calls
+
+classifier:
+  conservative: true            # only leave DEFAULT when the text isn't explicit; never guess a type
+  body_char_cap: 6000           # truncate very long note bodies sent to the LLM (keeps the prompt sane)
+  max_links_per_note: 40        # safety cap on links classified in one call
+  # SAFE SUBSET (operator decision 2026-07-02): the LLM may auto-promote ONLY these types — the ones
+  # with an explicit lexical signal it proved reliable on. The 4 infra types (accessed_via/runs_on/
+  # depends_on/uses) measured ~25% precision on qwen3:30b, so they stay author-typed-only via
+  # [[name|rel_type]] links until a stronger/fine-tuned model earns them. Omit key => all types.
+  autopromote_types:
+    - supersedes
+    - conflicts_with
+  # REVIEW GATE (the operator 2026-07-03): instead of silently dropping the infra types to relates_to,
+  # the classifier PROPOSES them into a queue (only when the edge passes grounding + citation +
+  # verify) for a manager (managers) to approve/reject — the human is the precision boost, not a bigger
+  # model. rel_type stays relates_to until approved. Keep disjoint from autopromote_types (auto wins).
+  # Empty/omit => no review queue (infra types just stay relates_to, the pre- behaviour).
+  # (the operator 2026-07-07): the three STRUCTURAL infra types (accessed_via/runs_on/depends_on) are now
+  # derived deterministically at 100% precision from the infra model by derive_infra_edges.py, so the
+  # LLM no longer proposes them (it was ~25% precise on qwen3:30b — the reason for the review gate).
+  # Only `uses` — a genuinely SEMANTIC relation with no infra_link equivalent — stays LLM-proposed.
+  review_types:
+    - uses
+
+  # make human review OPTIONAL for a shipped user (Stage 4).
+  review_mode: true            # true = queue REVIEW types for a manager (OUR default); false = auto-apply
+  auto_apply_confidence: 1.0   # min fraction of verifier lenses that must confirm to auto-apply (review off)
+  confidence_votes: 2          # independent verifier lenses used to score corroboration confidence
+# --- Stage 0: ontology-discovery knobs (discover_ontology.py). Code-default fallbacks hold if
+# this block is missing (box-ready). Discovery is a batch job (LLM-bound); tune for speed vs depth. ---
+discovery:
+  sample: 0                 # notes to sample (0 = all live notes); CLI --limit overrides
+  sample_mtypes: []         # optional mtype filter (e.g. [reference, project]); empty = all
+  body_char_cap: 3500       # truncate note body sent to the extractor (relations stated throughout)
+  max_triples_per_note: 10  # cap triples pulled per note
+  extract_num_predict: 1024 # per-note extract token budget (lower = faster)
+  cluster_threshold: 0.68   # bge-m3 bare-gloss cosine to merge synonyms (calibrated 2026-07-07)
+  min_support: 3            # min distinct notes a NEW type needs to survive (noise filter)
+  align_existing: true      # fold discovered synonyms into the current graph.yaml types
+  max_define: 150           # cap distinct phrases sent to the Define step (by support)
+  define_batch: 20
+  out: graph.discovered.yaml
+
+# --- LLM provider routing for discovery + typing (classify_edges) generate calls.
+# DEFAULT = local Ollama (self-contained, no key). A user MAY route to a cloud provider for higher
+# precision. The API KEY is NEVER stored here — set `key_env` to the NAME of the env var that holds
+# it (systemd EnvironmentFile / shell). Missing block => provider=ollama using the `ollama:` block. ---
+llm:
+  provider: ollama            # ollama | openai | anthropic
+  # --- cloud settings, used ONLY when provider != ollama ---
+  base_url: ""                # openai: https://api.openai.com/v1  ·  anthropic: https://api.anthropic.com
+  model: ""                   # openai: gpt-4o  ·  anthropic: claude-opus-4-8
+  key_env: ""                 # NAME of the env var holding the API key (e.g. OPENAI_API_KEY) — never the key
+  timeout: 60
+  # anthropic_version: "2023-06-01"   # override only if Anthropic bumps the version header

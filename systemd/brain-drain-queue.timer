@@ -1,0 +1,10 @@
+[Unit]
+Description=Brain: queue-drain (scheduled)
+
+[Timer]
+OnCalendar=*-*-* 05:20:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

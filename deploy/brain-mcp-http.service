@@ -1,0 +1,20 @@
+[Unit]
+Description=Brain MCP (streamable-http) — central remote MCP for managers
+After=network-online.target brain-api.service
+Wants=network-online.target
+
+[Service]
+User=brain
+Group=brain
+WorkingDirectory=/opt/brain-db/mcp
+Environment=BRAIN_MCP_TRANSPORT=streamable-http
+Environment=BRAIN_NO_CERT=1
+Environment=BRAIN_URL=http://127.0.0.1:5000
+Environment=FASTMCP_HOST=127.0.0.1
+Environment=FASTMCP_PORT=8765
+ExecStart=/opt/brain-db/venv/bin/python /opt/brain-db/mcp/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

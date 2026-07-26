@@ -1,0 +1,10 @@
+[Unit]
+Description=Brain: derive structural graph edges from the infra model (scheduled)
+
+[Timer]
+OnCalendar=Mon *-*-* 04:20:00
+Persistent=true
+RandomizedDelaySec=180
+
+[Install]
+WantedBy=timers.target

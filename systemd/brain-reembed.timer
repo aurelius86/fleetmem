@@ -1,0 +1,10 @@
+[Unit]
+Description=Brain: re-embed NULL-embedding memory/session_turn rows (scheduled)
+
+[Timer]
+OnCalendar=*-*-* 04:40:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

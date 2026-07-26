@@ -1,0 +1,6 @@
+# Keep shell/python/SQL text LF-normalized so a Windows clone doesn't get CRLF line endings that
+# break `install.sh` (bash rejects the trailing \r). Reported by an fleetmem v0.1.0 tester.
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.sql text eol=lf

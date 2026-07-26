@@ -1,0 +1,14 @@
+# Brain service direct deps — pinned. install.sh pip-installs these into a dedicated venv
+# ($PREFIX/venv) so every distro gets the SAME versions (apt ships older, distro-tracked ones);
+# all fleetmem processes (API, MCP, migrate, hygiene timers) run from that venv.
+Flask==3.1.3
+gunicorn==23.0.0
+# psycopg2-binary (not psycopg2): ships a prebuilt wheel, so the venv installs with no C toolchain
+# / libpq-dev on the target box. Same module (`import psycopg2`), same LGPL license.
+psycopg2-binary==2.9.12
+PyYAML==6.0.2
+# >=2.32.4 is a security floor: 2.32.3 and earlier leak .netrc credentials to a third-party host on a
+# maliciously-crafted URL (CVE-2024-47081, fixed in 2.32.4).
+requests==2.32.4
+# MCP server SDK — mcp/server.py imports mcp.server.fastmcp.FastMCP. MIT. Not in Debian apt (pip-only).
+mcp==1.28.1

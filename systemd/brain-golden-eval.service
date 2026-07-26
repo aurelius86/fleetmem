@@ -1,0 +1,11 @@
+[Unit]
+Description=Brain: recall golden-set regression check + manager alert
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=brain
+WorkingDirectory=/opt/brain-db/db
+EnvironmentFile=-/opt/brain-db/db/brain.env
+ExecStart=/usr/bin/python3 /opt/brain-db/db/golden_regression.py
