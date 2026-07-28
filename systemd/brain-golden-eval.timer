@@ -1,8 +1,10 @@
 [Unit]
-Description=Brain: recall golden-set regression check (scheduled monthly)
+Description=Brain: recall golden-set regression check (scheduled daily)
 
 [Timer]
-OnCalendar=*-*-01 05:40:00
+# DAILY (was monthly *-*-01). The store grows ~883 notes/day; a monthly probe let recall sit
+# below floor undetected for weeks. Persistent=true still runs a missed check on the next boot.
+OnCalendar=*-*-* 05:40:00
 Persistent=true
 RandomizedDelaySec=300
 

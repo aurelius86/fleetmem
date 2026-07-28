@@ -53,6 +53,14 @@ runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='$PGDA
   || runuser -u postgres -- createdb -O "$SVC_USER" --encoding=UTF8 --template=template0 \
        --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8 "$PGDATABASE"   # explicit UTF8: on a C-locale host the default would be a SQL_ASCII DB that corrupts non-ASCII text
 runuser -u postgres -- psql -d "$PGDATABASE" -c "CREATE EXTENSION IF NOT EXISTS vector"
+# Guard a PRE-EXISTING database that predates the UTF8-create above: a SQL_ASCII/C-encoded DB silently
+# rejects non-ASCII writes (em-dash, Arabic, …) and PGCLIENTENCODING cannot fix it (the SERVER encoding
+# is what rejects). Warn loudly — the fresh createdb above is UTF8, so this only fires on an old DB.
+DBENC="$(runuser -u postgres -- psql -tAc "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname='$PGDATABASE'" | tr -d '[:space:]')"
+if [ "$DBENC" != "UTF8" ]; then
+  echo "!! WARNING: database '$PGDATABASE' is $DBENC, not UTF8 — non-ASCII writes WILL fail." >&2
+  echo "   Re-encode it before use: see 'Re-encoding a non-UTF8 (SQL_ASCII) database' in UPGRADING.md." >&2
+fi
 
 # 3. deploy code + config -----------------------------------------------------
 mkdir -p "$PREFIX"

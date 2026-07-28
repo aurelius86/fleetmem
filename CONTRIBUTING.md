@@ -11,6 +11,14 @@ terms as the rest of fleetmem. You keep the copyright to your own contribution.
 You confirm you have the right to submit the work (it is yours, or you are
 authorized to submit it). Opening a pull request constitutes acceptance.
 
+## Migrations are append-only
+Never edit a migration file (`migrations/NNNN_*.py`) once it has shipped or been applied anywhere —
+its `sha256` is recorded in `schema_migrations`, so **any** change (even a comment) trips the drift
+guard on every existing install and blocks `migrate.py up`. To change the schema, add a **new**
+numbered migration. To genericize wording for the public mirror, do it in `export-brain.py`, not in
+the tracked file. If a shipped migration truly was edited intentionally and is schema-neutral,
+`migrate.py reconcile` re-hashes it to the current file (review the diff first).
+
 ## How to contribute
 - Open an issue first for anything non-trivial so we can agree on the approach.
 - Keep changes focused and match the surrounding code style.

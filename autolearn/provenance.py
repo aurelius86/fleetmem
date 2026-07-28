@@ -164,3 +164,50 @@ def _result_text(content):
 def trust_for_spans(spans):
     """Convenience: verdict for a list of Span dicts (uses their channels)."""
     return trust_for_channels(s.get("channel") for s in spans)
+
+
+# --------------------------------------------------------- audit-against-source ----
+# The "teeth" (DeepTutor consolidator/modes/audit.py): a synthesized memory is only as trustworthy
+# as the evidence it cites. audit_support() scores, deterministically, how much of the memory BODY is
+# actually grounded in the cited spans' text. A near-zero score means the body asserts things the
+# cited evidence does not contain — over-synthesis or laundering — and is worth flagging at synthesis
+# time. Deterministic + LLM-free by design (same stance as the trust verdict above): never ask a model
+# to grade its own output against the source.
+import re as _re
+
+_WORD_RE = _re.compile(r"[a-z0-9]+")
+# tiny stoplist — drop the highest-frequency function words so the score reflects CONTENT overlap,
+# not shared grammar. Deliberately small; the >=3-char filter already removes most noise.
+_STOP = frozenset((
+    "the and or of to in on for is are was were be been being as at by with from this that these those "
+    "it its it's a an if then else not no yes but so than too very can will would should could may might "
+    "have has had do does did done use used using via per not any all each our your their his her"
+).split())
+
+# below this fraction of the body grounded in cited evidence, flag the memory as weakly supported
+AUDIT_WEAK_THRESHOLD = 0.35
+
+
+def _sig_tokens(text):
+    """Significant (content) tokens of a text: lowercase alnum words >=3 chars, minus the stoplist."""
+    return {t for t in _WORD_RE.findall((text or "").lower()) if len(t) >= 3 and t not in _STOP}
+
+
+def audit_support(body, evidence_texts):
+    """Fraction (0..1, rounded) of the memory body's significant tokens that also appear in the union
+    of the cited evidence texts. 1.0 = fully grounded in what was cited; near 0 = the body claims
+    things the cited spans don't support. Empty body or no evidence -> 0.0 (nothing to stand on)."""
+    b = _sig_tokens(body)
+    if not b:
+        return 0.0
+    evidence = set()
+    for t in (evidence_texts or ()):
+        evidence |= _sig_tokens(t)
+    if not evidence:
+        return 0.0
+    return round(len(b & evidence) / len(b), 4)
+
+
+def audit_verdict(score, threshold=AUDIT_WEAK_THRESHOLD):
+    """'supported' if the support score meets the threshold, else 'weak' (worth a human look)."""
+    return "supported" if (score is not None and score >= threshold) else "weak"

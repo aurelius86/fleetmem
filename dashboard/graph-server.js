@@ -16,6 +16,27 @@ const path = require('path');
 const zlib = require('zlib');
 const { execFileSync } = require('child_process');
 
+// ---- response helpers (stdlib-only) --------------------------------------
+// Kept here, near the requires and clear of any infra-fenced block, because
+// these are used by EVERY JSON route, not just the infra ones. They previously
+// sat inside the topology fence (SERVICES..getBrainHealth) and were stripped
+// from the scrubbed fleetmem/fleetmem build by build-fleetmem.js — which broke
+// every data endpoint in the shipped dashboard (sendJson not defined)..
+const sendJson = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); };
+// gzip large JSON payloads (graph.json ~2.4MB) when the client accepts it — big transfer win, browsers decode transparently.
+const sendJsonGz = (req, res, code, obj) => {
+  const body = Buffer.from(JSON.stringify(obj));
+  const ae = String((req.headers && req.headers['accept-encoding']) || '');
+  if (/\bgzip\b/.test(ae) && body.length > 1400) {
+    const gz = zlib.gzipSync(body);
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store', 'content-encoding': 'gzip', 'vary': 'accept-encoding' });
+    res.end(gz);
+  } else {
+    res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    res.end(body);
+  }
+};
+
 const PORT       = parseInt(process.env.PORT || '8788', 10);
 // Bind loopback by DEFAULT: this server holds a full-console brain credential (mTLS cert + token)
 // and has no auth of its own, so it must sit behind an mTLS proxy. A same-host proxy or an SSH

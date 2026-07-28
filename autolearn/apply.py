@@ -23,6 +23,8 @@ import time
 
 import yaml
 
+from . import provenance as P   # deterministic audit-against-source scoring
+
 # Columns we write explicitly; `tsv` is GENERATED, `embedding` is cast ::vector.
 _COLS = ["name", "mtype", "mem_tier", "share_status", "description", "body", "embedding", "embed_model",
          "readers", "sensitivity", "origin_channel", "trust", "author_body",
@@ -317,6 +319,49 @@ def resync_explicit_refs(cur, src_id, body, *, by="explicit-ref"):
     return pruned, added
 
 
+_TS_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")   # ISO-ish guard so a junk ts can't poison the txn
+
+
+def _safe_ts(ts):
+    """Only pass a span timestamp to a timestamptz column when it looks ISO; else NULL. A bad string
+    would abort the whole apply transaction (shared cursor), so fail safe to None."""
+    if isinstance(ts, str) and _TS_PREFIX_RE.match(ts):
+        return ts
+    return None
+
+
+def record_provenance(cur, memory_id, proposal):
+    """persist, AT SYNTHESIS TIME, the raw evidence spans a memory was distilled from, each with
+    a deterministic per-span support score (audit-against-source). No-op when the proposal carries no
+    cited spans (e.g. a human-approved proposal with no extractor citations). Returns rows written.
+
+    Idempotent on (memory_id, session_id, span_idx) so a re-apply refreshes rather than duplicates.
+    Provenance is derived from the proposal the gate already validated; it is never fed back into the
+    extractor prompt (generation must not see its own provenance — DeepTutor references.py:209)."""
+    cited = proposal.get("cited_spans") or []
+    if not cited:
+        return 0
+    body = proposal.get("body", "") or ""
+    session_id = proposal.get("source_session")
+    n = 0
+    for cs in cited:
+        span_idx = cs.get("span_idx")
+        if not isinstance(span_idx, int):
+            continue
+        text = cs.get("text") or ""
+        support = P.audit_support(body, [text])          # this span's contribution to grounding the body
+        cur.execute(
+            "INSERT INTO memory_provenance"
+            "(memory_id,session_id,span_idx,channel,span_ts,evidence_text,audit_support) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (memory_id,session_id,span_idx) DO UPDATE SET "
+            "channel=EXCLUDED.channel, span_ts=EXCLUDED.span_ts, "
+            "evidence_text=EXCLUDED.evidence_text, audit_support=EXCLUDED.audit_support",
+            [memory_id, session_id, span_idx, cs.get("channel"), _safe_ts(cs.get("ts")), text, support])
+        n += 1
+    return n
+
+
 def apply_proposal(cur, proposal, *, embed_fn, vec_fn, trust=None, embed_model=None):
     """Execute: embed the body via the pinned model, INSERT a memory row, return its id.
     `cur` is a live DB cursor; `embed_fn(text)->vec` and `vec_fn(vec)->literal` are
@@ -340,6 +385,7 @@ def apply_proposal(cur, proposal, *, embed_fn, vec_fn, trust=None, embed_model=N
     new_id = out["id"] if isinstance(out, dict) else out[0]
     record_supersedes(cur, new_id, old_id, sensitivity=row.get("sensitivity") or "normal",
                       by=row.get("author_body") or "autolearn-apply")
+    record_provenance(cur, new_id, proposal)   # link the memory to the evidence it came from
     return new_id
 
 #/A2-14: insert_personal() removed — dead since (autolearn never auto-writes; it

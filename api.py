@@ -27,7 +27,7 @@ from search import embed, vec_literal, RRF_K, MODEL   # POOL now via cfg("RECALL
 
 # single source of truth for the running code's release version (mirrors CHANGELOG.md);
 # exposed on /healthz so an operator can confirm what a live box is running.
-FLEETMEM_VERSION = "0.1.6"
+FLEETMEM_VERSION = "0.1.8"
 from contract import SENSITIVITY, TRUST, ORIGIN_CHANNELS, compute_content_hash
 from autolearn import apply as AL_apply
 from autolearn import conflict as AL_conflict
@@ -35,6 +35,7 @@ from autolearn import lessons as AL_lessons
 from autolearn import orchestrate as AL_orch
 from autolearn import extract as AL_extract   # server-side extraction (OllamaBackend)
 from autolearn import scrub as AL_scrub       # belt-and-suspenders server-side span scrub
+from autolearn import provenance as AL_prov   # audit-against-source scoring for /provenance
 from ingest_transcripts import redact   # reuse the backfill redactor (ONE server-side copy)
 
 app = Flask(__name__)
@@ -42,6 +43,21 @@ app = Flask(__name__)
 # handler runs (aligns with ATTACH_MAX_MB; Flask returns 413 past the cap). Env-tunable.
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_BODY_BYTES", str(25 * 1024 * 1024)))
 TRUST_HEADER_CN = "X-SSL-Client-CN"   # set by the local nginx after mTLS verify; trusted because only nginx reaches us on localhost
+
+
+from werkzeug.exceptions import HTTPException
+
+
+@app.errorhandler(Exception)
+def _json_error_handler(e):
+    """Always answer with JSON, never Flask's default HTML error page — an MCP/HTTP client then
+    gets a machine-readable reason (e.g. the UntranslatableCharacter/SQL_ASCII cause) instead of an
+    opaque 500 with a chunk of HTML. HTTPExceptions (abort(4xx), 404, 413, …) keep their status and
+    description; anything else is an unhandled 500 and is logged with a full traceback."""
+    if isinstance(e, HTTPException):
+        return jsonify(error=e.description, status=e.code), e.code
+    app.logger.exception("unhandled exception")
+    return jsonify(error=str(e)), 500
 
 
 DB_NAME = os.environ.get("PGDATABASE", "brain")
@@ -112,6 +128,9 @@ CONFIG_KNOBS = {
     "CONSOLIDATE_COSINE": (float, 0.90),   # near-dup consolidation similarity threshold (0..1)
     "AUTOLEARN_DEDUP_COSINE": (float, 0.90),   # autolearn semantic-dedup gate; skip a candidate this
     # close (cosine) to an existing trusted memory. 0..1; set >=1.0 to disable the semantic gate.
+    "AUTOLEARN_NAME_DEDUP": (int, 1),   #(c): also dedup an author's OWN cross-session fragment via
+    # the name/body sibling + value-guard signal (catches same-topic notes below the cosine gate). 0=off.
+    "AUTOLEARN_NAME_DEDUP_FLOOR": (float, 0.6),   # min neighbour cosine before the name/body sibling check runs
     "AUTOLEARN_LINK_COSINE": (float, 0.75),
     "ENTITY_EXPAND_WEIGHT": (float, 0.9),   # recall weight for a shared-entity match (peer to relation edges)
     "ENTITY_EXPAND_HUBCAP": (int, 25),      # skip entities mentioned by > this many memories (hubs = noise)   # similarity FLOOR for cross-graph relates_to links on a
@@ -344,11 +363,46 @@ def log(cur, actor, action, tkind=None, tid=None, detail=None):
 @app.get("/healthz")
 def healthz():
     try:
-        conn = db(); cur = conn.cursor(); cur.execute("SELECT 1"); cur.close(); conn.close()
-        return jsonify(ok=True, version=FLEETMEM_VERSION)
+        conn = db(); cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.execute("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()")
+        enc = cur.fetchone()[0]
+        cur.close(); conn.close()
+        if enc != "UTF8":
+            app.logger.warning("database encoding is %s, not UTF8 — non-ASCII writes will fail; re-encode it (see UPGRADING.md)", enc)
+        return jsonify(ok=True, version=FLEETMEM_VERSION, encoding=enc)
     except Exception as e:
         app.logger.warning("healthz db check failed: %s", e)
         return jsonify(ok=False, error="database unavailable", version=FLEETMEM_VERSION), 503
+
+
+@app.get("/healthz/detail")
+def healthz_detail():
+    """Deeper health than /healthz: DB up, encoding, and migration state (drift/pending). Unauth
+    like /healthz (reachable only through the nginx mTLS gate). 200 when healthy, 503 otherwise —
+    the machine-readable companion to `doctor.py`."""
+    out = {"version": FLEETMEM_VERSION, "ok": True}
+    try:
+        conn = db(); cur = conn.cursor()
+        cur.execute("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()")
+        out["encoding"] = cur.fetchone()[0]
+        out["db"] = "up"
+        try:
+            import migrate
+            done = migrate.applied(cur)
+            allm = migrate.discover()
+            out["migrations_applied"] = len(done)
+            out["migrations_pending"] = [v for v, _n, _m, _p in allm if v not in done]
+            out["migrations_drift"] = [v for v, _n, _m, p in allm if v in done and done[v] != migrate.checksum(p)]
+        except Exception as e:
+            out["migrations_error"] = str(e)
+        cur.close(); conn.close()
+    except Exception as e:
+        app.logger.warning("healthz/detail db check failed: %s", e)
+        return jsonify(ok=False, db="down", error=str(e), version=FLEETMEM_VERSION), 503
+    if out.get("encoding") != "UTF8" or out.get("migrations_pending") or out.get("migrations_drift") or out.get("migrations_error"):
+        out["ok"] = False
+    return jsonify(out), (200 if out["ok"] else 503)
 
 
 @app.get("/whoami")
@@ -1547,6 +1601,34 @@ def _ingest_candidates(cur, a, cands, session_id):
                         "FROM global_neighbors(%s::vector, %s)", (_cvec, 8))
             c["_neighbors"] = [dict(r) for r in cur.fetchall()]
             _top = c["_neighbors"][0] if c["_neighbors"] else None
+            #(c): cross-session OWN-fragment dedup (name/body sibling + value-guard) — catches an
+            # author's same-topic fragments that sit BELOW the semantic cosine gate (the store's dominant
+            # fragmentation source; the within-session merge cannot see across sessions). We SKIP+
+            # reinforce (never CONCAT here), so cross_session_sibling's value-guard is what protects a
+            # distinct fact (MTU 1300 vs 1344). Fail-open like the rest of this block.
+            if int(cfg("AUTOLEARN_NAME_DEDUP")):
+                _nfloor = float(cfg("AUTOLEARN_NAME_DEDUP_FLOOR"))
+                for _nb in c["_neighbors"]:
+                    if _nb["author_body"] != c["author_body"] or float(_nb["sim"]) < _nfloor:
+                        continue
+                    cur.execute("SELECT body FROM memory WHERE id=%s AND deleted_at IS NULL", (_nb["id"],))
+                    _br = cur.fetchone()
+                    if _br and AL_extract.cross_session_sibling(c.get("name"), text, _nb["name"], _br["body"] or ""):
+                        if c.get("source_session"):
+                            try:
+                                cur.execute("SAVEPOINT xs_dedup")
+                                AL_apply.link_usage(cur, c["source_session"], _nb["id"], by="autolearn-xsession-dedup")
+                                cur.execute("RELEASE SAVEPOINT xs_dedup")
+                            except Exception:
+                                cur.execute("ROLLBACK TO SAVEPOINT xs_dedup")
+                        results["skipped"].append(c.get("name"))
+                        log(cur, a["name"], "autolearn_skip", "proposal", None,
+                            {"name": c.get("name"), "reason": "cross_session_name_dup",
+                             "matched": _nb["name"], "sim": round(float(_nb["sim"]), 4)})
+                        c["_xs_deduped"] = True
+                        break
+            if c.get("_xs_deduped"):
+                continue
             if _top and 0.0 < _sthr < 1.0 and float(_top["sim"]) >= _sthr:
                 # A near-duplicate already exists somewhere in the brain (any agent, any tier).
                 if _top["author_body"] == c["author_body"]:
@@ -2545,6 +2627,39 @@ def memory_relations(mid):
     log(cur, a["name"], "memory_relations", "memory", str(mid), {"n": len(rels)})
     conn.commit(); cur.close(); conn.close()
     return jsonify(id=str(mid), name=me["name"], count=len(rels), relations=rels)
+
+
+@app.get("/memory/<mid>/provenance")
+def memory_provenance_get(mid):
+    """the raw session evidence a memory was distilled from — the cited spans (channel, ts,
+    scrubbed text) recorded AT SYNTHESIS TIME by autolearn, each with its deterministic support
+    score, plus an OVERALL audit verdict (how grounded the body is in ALL its cited evidence).
+    Manager/approver only, AUDITED; like /relations it bypasses the read-gate it feeds. Returns an
+    empty list for a memory with no recorded provenance (pre- rows, or a human-approved note
+    with no extractor citations)."""
+    a, err = authenticate()
+    if err:
+        return jsonify(error=err[0]), err[1]
+    if a["role"] not in ("manager", "approver"):
+        return jsonify(error="manager/approver role required"), 403
+    conn = db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT id, name, body FROM memory WHERE id=%s AND deleted_at IS NULL", [mid])
+    me = cur.fetchone()
+    if not me:
+        cur.close(); conn.close()
+        return jsonify(error="not found"), 404
+    cur.execute("SELECT session_id, span_idx, channel, span_ts, evidence_text, audit_support "
+                "FROM memory_provenance WHERE memory_id=%s ORDER BY session_id, span_idx", [mid])
+    rows = cur.fetchall()
+    evidence = [{"session_id": r["session_id"], "span_idx": r["span_idx"], "channel": r["channel"],
+                 "span_ts": _iso(r["span_ts"]), "evidence_text": r["evidence_text"],
+                 "support": r["audit_support"]} for r in rows]
+    overall = AL_prov.audit_support(me["body"], [r["evidence_text"] for r in rows]) if rows else None
+    verdict = AL_prov.audit_verdict(overall) if rows else "none"
+    log(cur, a["name"], "memory_provenance", "memory", str(mid), {"n": len(evidence), "audit": verdict})
+    conn.commit(); cur.close(); conn.close()
+    return jsonify(id=str(mid), name=me["name"], count=len(evidence),
+                   audit_support=overall, audit_verdict=verdict, evidence=evidence)
 
 
 @app.get("/memory/<name>")
@@ -5405,6 +5520,38 @@ def session_rebuild(sid):
     if not ok:
         return jsonify(ok=False, sid=sid, error=out[-800:]), 500
     return jsonify(ok=True, sid=sid, summary=summary, output=out[-4000:])
+
+
+@app.get("/metrics")
+def metrics():
+    """Prometheus exposition for the brain API. Additive + read-only, unauthenticated
+    like /healthz; reachable only through the nginx mTLS gate."""
+    from flask import Response
+    out = []
+    def emit(name, help_, value, labels=""):
+        out.append("# HELP %s %s" % (name, help_))
+        out.append("# TYPE %s gauge" % name)
+        out.append("%s%s %s" % (name, labels, value))
+    up = 1
+    try:
+        conn = db(); cur = conn.cursor()
+        try:
+            cur.execute("SELECT GREATEST(reltuples::bigint, 0) FROM pg_class WHERE relname = 'memory'")
+            emit("brain_memory_total", "Total memories in the brain", cur.fetchone()[0])
+        except Exception as e:
+            app.logger.warning("metrics memory count failed: %s", e)
+        try:
+            cur.execute("SELECT count(*) FROM action_log")
+            emit("brain_action_log_total", "Total action_log rows", cur.fetchone()[0])
+        except Exception as e:
+            app.logger.warning("metrics action_log count failed: %s", e)
+        cur.close(); conn.close()
+    except Exception as e:
+        up = 0
+        app.logger.warning("metrics db unavailable: %s", e)
+    emit("brain_up", "Brain API up and DB reachable", up)
+    emit("brain_build_info", "Brain API build info", 1, '{version="%s"}' % FLEETMEM_VERSION)
+    return Response("\n".join(out) + "\n", mimetype="text/plain; version=0.0.4")
 
 
 if __name__ == "__main__":

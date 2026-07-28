@@ -21,6 +21,7 @@ import hashlib
 import json
 import re
 import urllib.request
+from collections import Counter
 
 from contract import compute_content_hash   # the ONE canonical content-hash formula
 from . import provenance as P
@@ -317,12 +318,43 @@ def assess(candidate, spans):
     return _most_external(channels) if channels else P.UNKNOWN, trust, channels
 
 
+# per-cited-span evidence cap. The provenance table keeps the span text the fact was distilled
+# from; a span can be long (a big tool-output), so cap what we persist — enough to audit against, not
+# a full transcript copy.
+_PROV_TEXT_CAP = int(os.environ.get("PROVENANCE_TEXT_CAP", "2000"))
+
+
+def cited_spans_for(candidate, spans, text_cap=_PROV_TEXT_CAP):
+    """Resolve a candidate's `source_spans` citations to evidence dicts for provenance capture.
+
+    Returns [{span_idx, channel, ts, text}] for each DISTINCT cited span, mirroring assess()'s
+    citation rule (out-of-range / non-int indices dropped). `span_idx` prefers the span's own
+    transcript idx (stable within the session) and falls back to the citation position. Text is
+    capped. This is what apply_proposal writes into memory_provenance at synthesis time."""
+    idxs = [i for i in (candidate.get("source_spans") or []) if isinstance(i, int) and 0 <= i < len(spans)]
+    out, seen = [], set()
+    for i in idxs:
+        s = spans[i] or {}
+        span_idx = s.get("idx") if isinstance(s.get("idx"), int) else i
+        if span_idx in seen:
+            continue
+        seen.add(span_idx)
+        out.append({"span_idx": span_idx, "channel": s.get("channel"),
+                    "ts": s.get("ts"), "text": (s.get("text") or "")[:text_cap]})
+    return out
+
+
 def build_proposal(candidate, spans, session_id=None, author_body="manager"):
     """Assemble the /propose payload from a candidate + its provenance verdict.
 
     `cited_channels` is carried through so a downstream validator (orchestrate / the API)
     can RE-DERIVE trust deterministically server-side instead of believing the `trust`
-    field — defense in depth against a buggy or compromised pipeline."""
+    field — defense in depth against a buggy or compromised pipeline.
+
+    `cited_spans` carries the ACTUAL evidence spans the fact was distilled from, so
+    apply_proposal can record provenance at synthesis time. Like `trust`, it is advisory to the
+    server (the API re-derives from the posted spans); it is never fed back into the extractor
+    prompt (provenance must not leak into generation — DeepTutor references.py:209)."""
     origin_channel, trust, channels = assess(candidate, spans)
     body = candidate.get("body", "")
     return {
@@ -333,10 +365,165 @@ def build_proposal(candidate, spans, session_id=None, author_body="manager"):
         "origin_channel": origin_channel,
         "trust": trust,
         "cited_channels": sorted(c for c in channels if c),
+        "cited_spans": cited_spans_for(candidate, spans),
         "author_body": author_body,
         "source_session": session_id,
         "content_hash": compute_content_hash(candidate.get("name", ""), body),   # canonical name+body
     }
+
+
+# ---------------------------------------------------- sibling merge ----
+# Fragmentation guard: the extractor sometimes splits ONE unit of work into
+# several near-sibling candidates (e.g. brain_metrics_implementation_{pattern,
+# location,safety_pattern,...}). The per-candidate judge/backstop can't catch it
+# (each note is judged in isolation), so we fold same-session siblings AFTER
+# extraction. Deterministic + high-precision by design; the failure mode is
+# graceful because a merge CONCATENATES bodies — no information is ever dropped.
+_MERGE_MIN_PREFIX = 3      # shared leading name-tokens to call two notes prefix-siblings
+_MERGE_MIN_JACCARD = 0.6   # body-token Jaccard to call two notes content-siblings
+
+
+def _name_tokens(name):
+    """Order-preserving meaningful name tokens (split on _/-, drop <3-char/generic)."""
+    return [t for t in re.split(r"[_\-]+", (name or "").lower()) if len(t) >= 3]
+
+
+def _shared_prefix_len(a, b):
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _jaccard(a, b):
+    return (len(a & b) / len(a | b)) if (a and b) else 0.0
+
+
+def _are_siblings(p, q):
+    """Same-session AND (shared >=3-token name prefix OR near-identical body)."""
+    if (p.get("source_session") or None) != (q.get("source_session") or None):
+        return False
+    if _shared_prefix_len(_name_tokens(p.get("name", "")), _name_tokens(q.get("name", ""))) >= _MERGE_MIN_PREFIX:
+        return True
+    return _jaccard(_tokens(p.get("body", "")), _tokens(q.get("body", ""))) >= _MERGE_MIN_JACCARD
+
+
+# ---(c): cross-session dedup ------------------------------------------------------------------
+# _are_siblings gates on same source_session (the within-session merge). At INGEST we also want
+# to catch the SAME fact captured in a DIFFERENT session (the store's dominant fragmentation source).
+# Because the ingest path SKIPs the new capture (not CONCAT like the within-session merge), it MUST NOT
+# fire when the two notes differ in a VALUE — that would silently drop a distinct fact (MTU 1300 vs
+# 1344). So: the session-agnostic sibling relation AND a value-guard.
+_VALUE_NUM_RE = re.compile(r"\d{2,}")
+_VALUE_URL_RE = re.compile(r"https?://\S+")
+
+
+def _value_compatible(text_a, text_b):
+    """No CONFLICTING numbers (>=2 digits) or URLs: one side's set must be a subset of the other
+    (equal, or one merely adds detail). Two distinct values -> NOT compatible (they are distinct facts)."""
+    na, nb = set(_VALUE_NUM_RE.findall(text_a or "")), set(_VALUE_NUM_RE.findall(text_b or ""))
+    if na and nb and not (na <= nb or nb <= na):
+        return False
+    ua, ub = set(_VALUE_URL_RE.findall(text_a or "")), set(_VALUE_URL_RE.findall(text_b or ""))
+    if ua and ub and ua != ub:
+        return False
+    return True
+
+
+def cross_session_sibling(name_a, body_a, name_b, body_b):
+    """True iff two notes (from ANY sessions) are the same fact worth deduping at ingest:
+    (shared >=3-token name prefix OR body-token Jaccard >= _MERGE_MIN_JACCARD) AND value-compatible
+    (no conflicting numbers/URLs across name+body). Pure; used by the api.py ingest dedup ((c))."""
+    name_sib = _shared_prefix_len(_name_tokens(name_a), _name_tokens(name_b)) >= _MERGE_MIN_PREFIX
+    body_sib = _jaccard(_tokens(body_a), _tokens(body_b)) >= _MERGE_MIN_JACCARD
+    if not (name_sib or body_sib):
+        return False
+    return _value_compatible((name_a or "") + " " + (body_a or ""),
+                             (name_b or "") + " " + (body_b or ""))
+
+
+def _merge_cluster(members):
+    """Fold a cluster of sibling proposals into one. Bodies concatenated (deduped),
+    trust the most conservative, channels unioned, hash recomputed."""
+    tok_lists = [_name_tokens(m.get("name", "")) for m in members]
+    common = tok_lists[0]
+    for tl in tok_lists[1:]:
+        common = common[:_shared_prefix_len(common, tl)]
+    name = "_".join(common) if len(common) >= _MERGE_MIN_PREFIX else members[0].get("name", "")
+    seen, bodies = set(), []
+    for m in members:
+        b = (m.get("body") or "").strip()
+        if b and b not in seen:
+            seen.add(b)
+            bodies.append(b)
+    body = "\n".join(bodies)
+    channels = sorted({c for m in members for c in (m.get("cited_channels") or [])})
+    trust = "trusted" if all(m.get("trust") == "trusted" for m in members) else "quarantined"
+    mtype = Counter(m.get("mtype", "reference") for m in members).most_common(1)[0][0]
+    desc = next((m.get("description") for m in members if m.get("description")), "")
+    # union the members' cited-span evidence (same-session merge, so span_idx is comparable),
+    # dedup by span_idx — the merged note is grounded in the union of what its siblings cited.
+    cited_spans, seen_spans = [], set()
+    for m in members:
+        for cs in (m.get("cited_spans") or []):
+            k = cs.get("span_idx")
+            if k in seen_spans:
+                continue
+            seen_spans.add(k)
+            cited_spans.append(cs)
+    return {
+        "name": name,
+        "mtype": mtype,
+        "description": desc,
+        "body": body,
+        "origin_channel": _most_external(set(channels)) if channels else members[0].get("origin_channel"),
+        "trust": trust,
+        "cited_channels": channels,
+        "cited_spans": cited_spans,
+        "author_body": members[0].get("author_body"),
+        "source_session": members[0].get("source_session"),
+        "content_hash": compute_content_hash(name, body),
+    }
+
+
+def merge_siblings(proposals):
+    """Fold same-session near-sibling candidates into one note.
+
+    Union-find over the pairwise sibling relation, so a transitive chain (a~b, b~c)
+    forms one cluster. Order-stable (a cluster takes its first member's position);
+    singletons and empty input pass through untouched. Pure — no I/O, no LLM."""
+    n = len(proposals)
+    if n < 2:
+        return list(proposals)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _are_siblings(proposals[i], proposals[j]):
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[max(ri, rj)] = min(ri, rj)
+
+    groups, order = {}, []
+    for i in range(n):
+        r = find(i)
+        if r not in groups:
+            groups[r] = []
+            order.append(r)
+        groups[r].append(i)
+    out = []
+    for r in order:
+        members = [proposals[i] for i in groups[r]]
+        out.append(members[0] if len(members) == 1 else _merge_cluster(members))
+    return out
 
 
 def extract_session(spans, backend, session_id=None, author_body="manager", known=None, diag=None):
@@ -366,7 +553,7 @@ def extract_session(spans, backend, session_id=None, author_body="manager", know
         if diag is not None:
             diag["windows_total"] = 1
             diag["windows_unparseable"] = 1 if failed else 0
-        return [build_proposal(c, spans, session_id, author_body) for c in cands]
+        return merge_siblings([build_proposal(c, spans, session_id, author_body) for c in cands])
     out, seen, parse_errors = [], set(), 0
     for chunk in chunks:
         raw = backend.generate(build_prompt(chunk, known=known), system=_SYSTEM)
@@ -384,4 +571,4 @@ def extract_session(spans, backend, session_id=None, author_body="manager", know
     if diag is not None:
         diag["windows_total"] = len(chunks)
         diag["windows_unparseable"] = parse_errors
-    return out
+    return merge_siblings(out)

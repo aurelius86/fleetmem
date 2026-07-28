@@ -6,9 +6,10 @@ numbered migration modules in ./migrations, applied here inside one transaction 
 recorded in `schema_migrations`, and logged to `action_log`.
 
 Usage (run as the brain service user via local peer auth):
-    python3 migrate.py status        # show applied vs pending
-    python3 migrate.py up            # apply all pending migrations
-    python3 migrate.py down <ver>    # roll back a single applied migration
+    python3 migrate.py status          # show applied vs pending (+ drift / encoding warnings)
+    python3 migrate.py up              # apply all pending migrations
+    python3 migrate.py down <ver>      # roll back a single applied migration
+    python3 migrate.py reconcile [--yes]   # re-hash applied migrations whose file was intentionally edited
 
 Connection: local unix socket, dbname=brain (peer auth maps OS brain -> PG role brain).
 Override with PGDATABASE / standard libpq env vars if needed.
@@ -103,9 +104,25 @@ def applied(cur):
     return {v: c for v, c in cur.fetchall()}
 
 
+def db_encoding(cur):
+    """The server-side encoding of the connected database (e.g. 'UTF8' or 'SQL_ASCII')."""
+    cur.execute("SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()")
+    return cur.fetchone()[0]
+
+
+# A SQL_ASCII / non-UTF8 database silently rejects non-ASCII writes (an em-dash, Arabic text, …) —
+# PGCLIENTENCODING does NOT help; the SERVER encoding is what rejects it. Fresh installs are created
+# UTF8; a DB minted SQL_ASCII before that fix stays broken until re-encoded.
+_REENCODE_HINT = ("database encoding is %s, not UTF8 — non-ASCII writes will fail. Re-encode it first: "
+                  "see the \"Re-encoding a non-UTF8 (SQL_ASCII) database\" recipe in UPGRADING.md.")
+
+
 def cmd_status():
     with connect() as conn, conn.cursor() as cur:
         ensure_bootstrap(cur)
+        enc = db_encoding(cur)
+        if enc != "UTF8":
+            print("  !! WARNING: " + (_REENCODE_HINT % enc))
         done = applied(cur)
         print("applied: %d" % len(done))
         for version, name, _mod, path in discover():
@@ -120,6 +137,9 @@ def cmd_up():
     with connect() as conn:
         with conn.cursor() as cur:
             ensure_bootstrap(cur)
+            enc = db_encoding(cur)
+            if enc != "UTF8":
+                sys.exit("ABORT: " + (_REENCODE_HINT % enc))
             #/A3-11: serialize concurrent runners — a second `up` blocks here until the first
             # releases the lock (at process exit), so two can't race a migration into a half state.
             cur.execute("SELECT pg_advisory_lock(%s)", (MIGRATE_LOCK,))
@@ -130,7 +150,9 @@ def cmd_up():
         drifted = [v for v, name, mod, path in discover() if v in done and done[v] != checksum(path)]
         if drifted:
             sys.exit("ABORT: checksum drift on already-applied migration(s): %s — the file(s) changed "
-                     "since they were applied; reconcile before running `up`." % ", ".join(drifted))
+                     "since they were applied. If the edit was intentional and schema-neutral (a comment "
+                     "or genericization change), review it and run `migrate.py reconcile` to re-hash; "
+                     "otherwise restore the file(s). Never run `up` on a drifted base." % ", ".join(drifted))
         for version, name, mod, path in discover():
             if version in done:
                 continue
@@ -166,6 +188,39 @@ def cmd_down(target):
     sys.exit("migration %s not found" % target)
 
 
+def cmd_reconcile(assume_yes):
+    """Re-hash already-applied migrations whose FILE changed since they ran (checksum drift).
+
+    Use this ONLY when the change was intentional and schema-neutral (a comment edit, a
+    genericization pass) — it updates the RECORDED checksum to match the current file so `up`
+    stops aborting on the drift guard. It runs NO DDL and never touches the schema itself.
+    Review the diffs first (`git log -p migrations/<file>`); if a change was NOT intentional,
+    restore the file instead of reconciling.
+    """
+    with connect() as conn, conn.cursor() as cur:
+        ensure_bootstrap(cur)
+        done = applied(cur)
+        drifted = [(v, name, done[v], checksum(path))
+                   for v, name, _mod, path in discover()
+                   if v in done and done[v] != checksum(path)]
+        if not drifted:
+            print("reconcile: no checksum drift — nothing to do.")
+            return
+        print("checksum drift on %d already-applied migration(s):" % len(drifted))
+        for v, name, old, new in drifted:
+            print("  %s_%s  recorded=%s  file=%s" % (v, name, old, new))
+        if not assume_yes:
+            print("\nThis re-hashes the recorded checksums to match the current files (NO DDL runs).")
+            print("Review the file changes first, then re-run:  migrate.py reconcile --yes")
+            return
+        for v, name, old, new in drifted:
+            cur.execute("UPDATE schema_migrations SET checksum=%s WHERE version=%s", (new, v))
+            log_action(cur, "reconcile_migration", "schema_migrations", v,
+                       {"name": name, "old_checksum": old, "new_checksum": new})
+        conn.commit()
+        print("reconcile: re-hashed %d migration(s). Run `migrate.py status` to confirm clean." % len(drifted))
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -176,6 +231,8 @@ def main():
         cmd_up()
     elif cmd == "down" and len(sys.argv) == 3:
         cmd_down(sys.argv[2])
+    elif cmd == "reconcile":
+        cmd_reconcile("--yes" in sys.argv[2:])
     else:
         sys.exit(__doc__)
 

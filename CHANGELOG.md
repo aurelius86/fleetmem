@@ -3,6 +3,22 @@
 All notable changes to fleetmem are recorded here. Versions follow semantic versioning.
 
 ## Unreleased
+- **Fixed:** `vet_similarity_links.py` crash (`AttributeError: 'str' object has no attribute 'get'`) when the model returns non-dict entries in `links` — now guarded. Surfaced by `doctor.py` on the first live run.
+- **Fixed:** `deploy/pull_deploy.py` GitOps deploy now supports an **empty `SUBDIR`** (the repo root *is* the code tree, e.g. `fleet/brain-codes`) — the archive prefix was `"<root>//"` and matched nothing. Defaults + `pull-deploy.env.example` centralized here and repointed off the retired legacy monorepo `db/` subtree.
+
+## v0.1.8 — 2026-07-27
+Upgrade/installer robustness — from an external v0.1.0→v0.1.6 upgrade field report (Waves 1–2 of 3;
+Wave 3, the fleetmem→fleetmem upgrade note, ships with the rebrand).
+- **Added:** **`doctor.py`** (`python3 doctor.py`) — one-command health check that surfaces the silent problems: non-UTF8 database, migration drift/pending, missing venv, **stale systemd unit paths, and failed `brain-*` timers**. Self-skips the systemd checks off a systemd host (CI). Exit 0 = healthy.
+- **Added:** **`GET /healthz/detail`** — the machine-readable companion to `doctor.py` (version, db, encoding, applied/pending/drift migrations); 200 when healthy, 503 otherwise. Unauth like `/healthz` (behind the mTLS gate).
+- **Changed:** **`update.sh` is now robust across the system-python → venv re-platform** — it builds `$PREFIX/venv` if missing, installs `requirements.txt`, **rewires the systemd `ExecStart`** to the venv interpreter (+ `daemon-reload`), and fails loudly on a missing `python3-venv`. `UPGRADING.md` names `cp -a` for copy-installs and documents the venv/unit steps + `doctor.py` verify.
+- **Added:** **`migrate.py reconcile [--yes]`** — re-hashes already-applied migrations whose file was intentionally, schema-neutrally edited (a comment/genericization change), so `up` stops aborting on the drift guard. Shows the drift and requires `--yes` to apply; runs **no DDL**; logs a `reconcile_migration` `action_log` row. The `up` abort message now points at it. Root fix documented in `CONTRIBUTING.md`: **shipped migrations are append-only** (never edit a checksummed `NNNN_*.py`).
+- **Added:** **non-UTF8 (`SQL_ASCII`) database guard.** `migrate.py up` now **refuses** (and `status` warns) when the database encoding isn't UTF8 — a `SQL_ASCII` DB silently rejects non-ASCII writes and `PGCLIENTENCODING` can't fix it (the server encoding is what rejects). `install.sh` warns on a pre-existing non-UTF8 DB; `/healthz` reports `encoding`; `smoke_test.sh` adds a non-ASCII round-trip check; `UPGRADING.md` documents a copy-paste re-encode recipe (incl. the PG15 `GRANT ALL ON SCHEMA public`).
+- **Changed:** the API now returns **JSON on every error** (a blanket `@app.errorhandler`) — an MCP/HTTP client gets a machine-readable reason instead of Flask's opaque HTML 500. `HTTPException`s keep their status + description; unhandled errors log a full traceback and return `{"error": …}`, 500.
+
+## v0.1.7 — 2026-07-26
+Autolearn quality — a fragmentation guard, and the first change shipped via the new pull-based GitOps deploy.
+- **Added:** **autolearn sibling-merge guard** — `merge_siblings()` folds same-session near-sibling candidates into one note after extraction, so one unit of work no longer lands as ~5 fragments (e.g. `brain_metrics_implementation_{pattern,location,safety_pattern,…}`). Deterministic + high-precision: two candidates merge only when they share a ≥3-token name prefix **or** have near-identical bodies (Jaccard ≥ 0.6), **and** come from the same session. Merging **concatenates** bodies (no information dropped), takes the most conservative trust, and unions cited channels. Complements the per-candidate judge/backstop, which judge each note in isolation and so can't see fragmentation. 6 new unit tests + full 105-test autolearn suite green.
 
 ## v0.1.6 — 2026-07-20
 Recall-quality release — on-demand ranked recall, span-level compression, a skill-corpus browser, a fix to the recall regression harness, plus a sanctioned audited memory-delete tool.

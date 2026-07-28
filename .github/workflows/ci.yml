@@ -1,6 +1,8 @@
-# Public CI — a lightweight syntax gate for the open-source distribution.
-# Verifies every Python source byte-compiles on a clean runner. The full
-# integration + recall test suite runs in the maintainer's own pipeline.
+# fleetmem CI — runs on every push/PR.
+# Scope: what a CONTRIBUTOR change can break. The maintainer-side export gate
+# (scrub-verify) already fail-closes on anything fleet-specific before code
+# reaches this repo; the leak-scan step here re-checks the highest-signal
+# patterns so a PR can't introduce key material or a private endpoint.
 name: CI
 
 on:
@@ -9,13 +11,76 @@ on:
   pull_request:
 
 jobs:
-  compile:
-    name: byte-compile
+  test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: brain
+          POSTGRES_PASSWORD: brain
+          POSTGRES_DB: brain
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U brain"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Byte-compile all Python sources
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compile every Python file
         run: python -m compileall -q .
+
+      - name: Unit test — sensitivity routing (pick_backend)
+        run: python test_pick_backend.py
+
+      # run the whole autolearn unit suite, not just pick_backend, so tests can't silently
+      # rot (a stale default_readers assertion once drifted from the code undetected because CI
+      # never ran this suite). Pure-Python, no DB needed.
+      - name: Unit test — autolearn suite
+        run: python -m unittest discover -s autolearn/tests
+
+      # Mirror install.sh's pre-migration setup (CI doesn't run install.sh). Migrations expect a
+      # superuser to have already created these before `migrate.py up`: the pgvector extension
+      # (migration 0001 uses the `vector` type) and the non-owner RLS role `brain_app` (the RLS
+      # migrations GRANT to it — 0037's grant is unguarded, per the documented pre-step in 0020).
+      # We can't move these into the migrations without tripping migrate.py's checksum-drift guard
+      # on already-migrated live boxes.
+      - name: Prepare database (mirror install.sh pre-steps)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: brain
+          PGPASSWORD: brain
+          PGDATABASE: brain
+        run: |
+          psql -c "CREATE EXTENSION IF NOT EXISTS vector"
+          psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='brain_app') THEN CREATE ROLE brain_app NOLOGIN; END IF; END \$\$;"
+
+      - name: Apply all migrations against a fresh Postgres
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: brain
+          PGPASSWORD: brain
+          PGDATABASE: brain
+        run: python migrate.py up
+
+      - name: Leak scan — no key material or private endpoints
+        run: |
+          set -e
+          fail=0
+          # each pattern on its own line so a hit names what it is
+          grep -rInE -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' --exclude-dir=.git . && { echo "::error::private key material found"; fail=1; }
+          grep -rInE 'op://[A-Za-z0-9]' --exclude-dir=.git . && { echo "::error::1Password secret ref found"; fail=1; }
+          grep -rInE 'AKIA[0-9A-Z]{16}' --exclude-dir=.git . && { echo "::error::AWS access key found"; fail=1; }
+          grep -rInE '\b10\.11\.12\.[0-9]{1,3}\b' --exclude-dir=.git --exclude-dir=.github . && { echo "::error::private-range endpoint found"; fail=1; }
+          exit $fail

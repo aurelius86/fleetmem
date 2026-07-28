@@ -21,6 +21,15 @@ bad(){ echo "  FAIL - $1"; fail=1; }
 
 echo "[1/7] apply migrations (idempotent)  [python: $PYTHON]"
 "$PYTHON" migrate.py up || bad "migrate up failed"
+# non-ASCII round-trip: a SQL_ASCII DB silently drops non-ASCII writes (the class of bug an upgraded
+# tester box hit). Encoding must be UTF8 and a non-ASCII value must survive a write+read.
+enc=$(psql -d "$DB" -tAc "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname=current_database()" 2>/dev/null | tr -d '[:space:]')
+[ "$enc" = "UTF8" ] && ok "db encoding is UTF8" || bad "db encoding is ${enc:-unknown}, not UTF8 (non-ASCII writes fail — re-encode, see UPGRADING.md)"
+if psql -d "$DB" -tAc "CREATE TEMP TABLE _sm_enc(t text); INSERT INTO _sm_enc VALUES ('café — Arabic مرحبا'); SELECT t FROM _sm_enc" 2>/dev/null | grep -q "مرحبا"; then
+  ok "non-ASCII round-trip"
+else
+  bad "non-ASCII round-trip failed (SQL_ASCII DB? re-encode — see UPGRADING.md)"
+fi
 
 echo "[2/7] schema: agent.autoapprove_own exists (else /autolearn/extract 500s)"
 if psql -d "$DB" -tAc \

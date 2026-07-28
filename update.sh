@@ -25,10 +25,40 @@ else
   echo "      code over $PREFIX, KEEPING your brain.env + pki/ — then re-run this. (See UPGRADING.md)"
 fi
 
-# 2. apply any NEW migrations — idempotent, only pending ones run; existing data preserved
-runuser -u "$SVC_USER" -- env PGDATABASE="$PGDATABASE" python3 "$PREFIX/migrate.py" up
+# 2. dependencies — fleetmem runs from a venv ($PREFIX/venv). Build it if missing (this covers the
+#    old system-python layout -> venv re-platform), then install requirements. Fail loudly on a
+#    missing venv module (ensurepip) instead of limping on with a broken interpreter.
+if [ ! -x "$PREFIX/venv/bin/python" ]; then
+  echo "-- no venv at $PREFIX/venv — creating one (system-python -> venv re-platform) --"
+  command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not found."; exit 1; }
+  python3 -m venv "$PREFIX/venv" \
+    || { echo "ERROR: python3 'venv' module missing — install it (Debian: apt-get install python3-venv), then re-run."; exit 1; }
+  chown -R "$SVC_USER:$SVC_USER" "$PREFIX/venv"
+  NEW_VENV=1
+fi
+PY="$PREFIX/venv/bin/python"
+runuser -u "$SVC_USER" -- "$PREFIX/venv/bin/pip" install --quiet --disable-pip-version-check --upgrade pip >/dev/null 2>&1 || true
+[ -f "$PREFIX/requirements.txt" ] \
+  && runuser -u "$SVC_USER" -- "$PREFIX/venv/bin/pip" install --quiet --disable-pip-version-check -r "$PREFIX/requirements.txt"
 
-# 3. restart services
+# 2b. if we just built the venv, rewire the systemd units from system-python/bare-gunicorn to the
+#     venv interpreter (the pre-venv ExecStart pointed at /usr/bin/python3 or /usr/bin/gunicorn).
+if [ "${NEW_VENV:-0}" = 1 ]; then
+  for unit in /etc/systemd/system/brain-api.service /etc/systemd/system/brain-mcp-http.service; do
+    [ -f "$unit" ] || continue
+    if grep -qE 'ExecStart=(/usr/bin/python3?|/usr/bin/gunicorn)' "$unit"; then
+      echo "-- rewiring $(basename "$unit") ExecStart -> $PREFIX/venv --"
+      sed -i -E "s#ExecStart=/usr/bin/python3?#ExecStart=$PREFIX/venv/bin/python#; s#ExecStart=/usr/bin/gunicorn#ExecStart=$PREFIX/venv/bin/gunicorn#" "$unit"
+      RELOAD=1
+    fi
+  done
+  [ "${RELOAD:-0}" = 1 ] && systemctl daemon-reload
+fi
+
+# 3. apply any NEW migrations — idempotent, only pending ones run; existing data preserved
+runuser -u "$SVC_USER" -- env PGDATABASE="$PGDATABASE" "$PY" "$PREFIX/migrate.py" up
+
+# 4. restart services
 systemctl restart brain-api.service 2>/dev/null || echo "NOTE: restart brain-api manually if needed."
 systemctl reload nginx 2>/dev/null || true
 systemctl try-restart brain-mcp-http.service 2>/dev/null || true

@@ -1,17 +1,22 @@
-# fleetmem — never commit your local config, PKI, tokens, or caches.
-# (These are created on your machine at install/enrollment; they are yours and must stay private.)
-brain.env
-pki/
-*.token
-*.key
+# fleetmem / brain — never commit local config, PKI, tokens, caches, or OS junk (union, 2026-07-27).
+
+!*.env.example
+*.bak
+*.bak-*
 *.crt
 *.csr
-*.pem
-__pycache__/
-*.pyc
+*.ed25519
+*.env
+*.key
 *.log
-*.bak-*
-
-# dated DB data dumps are snapshots, not code
-backup/*.sql
-backup/*.json
+*.orig
+*.pem
+*.pyc
+*.pyo
+*.token
+.DS_Store
+._*
+__pycache__/
+brain.env
+keys/
+pki/
