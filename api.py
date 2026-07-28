@@ -527,7 +527,7 @@ def bootstrap():
     ar = cur.fetchone()
     welcome = (ar or {}).get("welcome") or ""
     where, params = mem_read_where(a)
-    cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " LIMIT 1", [BOOTSTRAP_RULES_MOC] + params)
+    cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " ORDER BY updated_at DESC LIMIT 1", [BOOTSTRAP_RULES_MOC] + params)
     rr = cur.fetchone()
     rules = (rr or {}).get("body") or ""
     overlay = cfg("SESSION_BRIEF_OVERLAY") or ""   # global user house-rules overlay (raw, first-party)
@@ -548,7 +548,7 @@ def bootstrap():
                              "MOC is not visible to it (check its readers/groups vs the MOC). Session %s."
                              % (a["name"], a["role"], BOOTSTRAP_RULES_MOC, sid)))
     conn.commit(); cur.close(); conn.close()
-    return jsonify(welcome=welcome, rules=rules, overlay=overlay, session_id=sid)
+    return jsonify(welcome=welcome, rules=rules, overlay=overlay, global_overlay=overlay, session_id=sid)
 
 
 @app.route("/session-overlay", methods=["GET", "POST"])
@@ -629,9 +629,9 @@ def session_brief():
         cur.execute("SELECT welcome FROM agent WHERE name=%s", [a["name"]])
         ar = cur.fetchone(); welcome = (ar or {}).get("welcome") or ""
         where, params = mem_read_where(a)
-        cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " LIMIT 1", [BOOTSTRAP_RULES_MOC] + params)
+        cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " ORDER BY updated_at DESC LIMIT 1", [BOOTSTRAP_RULES_MOC] + params)
         rr = cur.fetchone(); rules = (rr or {}).get("body") or ""
-        cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " LIMIT 1", [CORE_KNOWLEDGE_MOC] + params)
+        cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " ORDER BY updated_at DESC LIMIT 1", [CORE_KNOWLEDGE_MOC] + params)
         kr = cur.fetchone(); core = (kr or {}).get("body") or ""
         overlay = cfg("SESSION_BRIEF_OVERLAY") or ""
         # live state: this agent's unread inbox + open tasks (RLS-filtered) + review queue (managers)
@@ -2312,14 +2312,16 @@ def agent_injection_preview(name):
         cur.close(); conn.close()
         return jsonify(error="unknown agent: %s" % name), 404
     where, params = mem_read_where(dict(tgt))
-    cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " LIMIT 1", [BOOTSTRAP_RULES_MOC] + params)
+    cur.execute("SELECT body FROM memory WHERE name=%s AND " + where + " ORDER BY updated_at DESC LIMIT 1", [BOOTSTRAP_RULES_MOC] + params)
     rr = cur.fetchone()
     rules = (rr or {}).get("body") or ""
     overlay = cfg("SESSION_BRIEF_OVERLAY") or ""
     cur.close(); conn.close()
     return jsonify(agent=name, role=tgt["role"], welcome=(tgt.get("welcome") or ""),
                    rules=rules, rules_visible=bool(rules), rules_moc=BOOTSTRAP_RULES_MOC,
-                   global_overlay=overlay, pinned_names=sorted(BOOTSTRAP_PINNED))
+                   # expose the overlay under BOTH keys so tooling that reads either endpoint's
+                   # key works (bootstrap historically used `overlay`, this route `global_overlay`).
+                   global_overlay=overlay, overlay=overlay, pinned_names=sorted(BOOTSTRAP_PINNED))
 
 
 @app.route("/agent/<name>", methods=["PATCH"])
