@@ -1,0 +1,12 @@
+[Unit]
+Description=Brain: project-plan staleness nudge (scheduled daily)
+
+[Timer]
+# Daily, offset from the sibling brain probes (golden 05:40, drift 05:50) so they don't pile up.
+# Persistent=true still runs a missed check on the next boot.
+OnCalendar=*-*-* 05:55:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

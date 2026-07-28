@@ -601,6 +601,8 @@ def session_overlay():
                 return jsonify(error="unknown agent: %s" % scope), 404
             log(cur, a["name"], "session_overlay_set", "agent", scope, {"scope": scope, "len": len(text)})
         conn.commit()
+        if scope == "global":
+            _cfg_cache["at"] = -1.0            # bust cfg() cache so /bootstrap serves the new overlay at once (other workers within _CFG_TTL), same as /config
         return jsonify(ok=True, scope=scope)
     finally:
         cur.close(); conn.close()
