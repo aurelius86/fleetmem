@@ -3990,6 +3990,20 @@ def schema():
 # Provisional-note expiry resolves live via cfg("PROVISIONAL_TTL_DAYS") at the insert sites below.
 
 
+def _derive_name(text):
+    """derive a slug name from a body when the caller supplied none, so a memory can never
+    persist nameless (which breaks name-keyed lookups + the knowledge graph). Prefer the first
+    markdown heading, then a bold lead-in, then the first non-empty line; normalize to the
+    underscored lowercase slug used everywhere else. Falls back to a body-hash tail if nothing usable."""
+    t = text or ""
+    m = (re.search(r'^\s*#+\s*(.+?)\s*$', t, re.M)      # markdown heading
+         or re.search(r'\*\*(.+?)\*\*', t)              # first **bold** lead-in
+         or re.search(r'^\s*(\S.+?)\s*$', t, re.M))     # first non-empty line
+    raw = (m.group(1) if m else t)[:80]
+    slug = re.sub(r'_+', '_', re.sub(r'[^a-z0-9]+', '_', raw.lower())).strip('_')[:60].strip('_')
+    return slug or ('note_' + hashlib.sha256(t.encode('utf-8')).hexdigest()[:10])
+
+
 @app.post("/provisional/memory")
 def provisional_memory():
     """Write a provisional, author-only, 2-week memory the author can use immediately."""
@@ -4002,9 +4016,10 @@ def provisional_memory():
     text = (b.get("body") or "").strip()
     if not text:
         return jsonify(error="empty body"), 400
-    if b.get("name") in BOOTSTRAP_PINNED and a["role"] != "manager":   # bootstrap-injected names are manager-only
+    _provided = (b.get("name") or "").strip()   # the caller's explicit name (may be blank -> we derive one)
+    if _provided in BOOTSTRAP_PINNED and a["role"] != "manager":   # bootstrap-injected names are manager-only
         return jsonify(error="'%s' is injected as instructions into every session; a worker may not "
-                             "write to it" % b.get("name")), 403
+                             "write to it" % _provided), 403
     mtype = b.get("mtype") if b.get("mtype") in ("user", "feedback", "project", "reference", "memory") else "memory"
     sens = b.get("sensitivity") if b.get("sensitivity") in SENSITIVITY else "normal"
     channel = b.get("origin_channel") or "agent-reasoning"
@@ -4012,23 +4027,33 @@ def provisional_memory():
     # self-approving tier); a WORKER may NOT (author!=validator) — its note stays untrusted until source-checked
     # or a manager vouches. Autolearn never sets this (its captures always land untrusted, the weak spot).
     _trust = "trusted" if (a["role"] == "manager" and (b.get("trusted") is True or b.get("trust") == "trusted")) else "quarantined"
-    chash = compute_content_hash(b.get("name"), text)   # canonical name+body hash (was agent+body)
     try:
         emb = vec_literal(embed(text)); embed_model = MODEL
     except Exception:
         emb = None; embed_model = None
     conn = db(); cur = conn.cursor()
+    # never persist a nameless memory — derive a slug from the body when none was supplied, and
+    # make an auto-derived name unique here (a caller-SUPPLIED name that collides still 409s below).
+    name = _provided or _derive_name(text)
+    if not _provided:
+        _base = name; _k = 1
+        while True:
+            cur.execute("SELECT 1 FROM memory WHERE name=%s AND deleted_at IS NULL LIMIT 1", (name,))
+            if not cur.fetchone():
+                break
+            _k += 1; name = "%s_%d" % (_base, _k)
+    chash = compute_content_hash(name, text)   # canonical name+body hash (was agent+body)
     # stamp the body's server-recorded CURRENT session (reliable) over the client-passed value
     # (which on the remote MCP is the connection's frozen, often-stale, X-Brain-Session header).
     sid = active_session(cur, a["name"]) or b.get("source_session")
-    sig, sig_kid = sign_memory(b.get("name"), text, a["name"], sid)   # tail: tamper-evidence
+    sig, sig_kid = sign_memory(name, text, a["name"], sid)   # tail: tamper-evidence
     try:
         cur.execute(
             "INSERT INTO memory(name,mtype,mem_tier,share_status,description,body,embedding,embed_model,readers,"
             "sensitivity,origin_channel,trust,author_body,source_session,content_hash,expires_at,signature,sig_key_id,tags) "
             "VALUES (%s,%s,'provisional','personal',%s,%s,%s::vector,%s,ARRAY[%s],%s,%s,%s,%s,%s,%s,NULL,%s,%s,%s) "
             "RETURNING id",
-            (b.get("name"), mtype, b.get("description"), text, emb, embed_model, a["name"],
+            (name, mtype, b.get("description"), text, emb, embed_model, a["name"],
              sens, channel, _trust, a["name"], sid, chash, sig, sig_kid, list(b.get("tags") or [])))
     except psycopg2.errors.UniqueViolation:
         conn.rollback(); cur.close(); conn.close()

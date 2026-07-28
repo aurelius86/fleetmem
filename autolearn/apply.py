@@ -112,6 +112,17 @@ def default_readers(sensitivity, share_status):
     return ["common"]
 
 
+def _derive_name(body):
+    """ safety net: never build a nameless memory row — derive a slug from the body when the
+    proposal carries no name (same shape as api._derive_name)."""
+    t = body or ""
+    m = (re.search(r'^\s*#+\s*(.+?)\s*$', t, re.M) or re.search(r'\*\*(.+?)\*\*', t)
+         or re.search(r'^\s*(\S.+?)\s*$', t, re.M))
+    raw = (m.group(1) if m else t)[:80]
+    slug = re.sub(r'_+', '_', re.sub(r'[^a-z0-9]+', '_', raw.lower())).strip('_')[:60].strip('_')
+    return slug or ('note_' + hashlib.sha256(t.encode('utf-8')).hexdigest()[:10])
+
+
 def build_memory_row(proposal, *, trust=None, embed_model=None, share_status=None):
     """Pure: map a proposal (dict) to the memory column values. No embedding yet.
 
@@ -123,7 +134,7 @@ def build_memory_row(proposal, *, trust=None, embed_model=None, share_status=Non
     autolearn's personal-write passes 'personal'. Falls back to the proposal's, else 'trusted'.
     """
     body = (proposal.get("proposed_body") or proposal.get("body") or "").strip()
-    name = proposal.get("name")
+    name = proposal.get("name") or _derive_name(body)   # never persist a nameless memory
     chash = proposal.get("content_hash") or (
         hashlib.sha256(((name or "") + "\n" + body).encode("utf-8")).hexdigest() if body else None)
     _share = share_status or proposal.get("share_status") or "trusted"
