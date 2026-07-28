@@ -84,3 +84,30 @@ jobs:
           grep -rInE 'AKIA[0-9A-Z]{16}' --exclude-dir=.git . && { echo "::error::AWS access key found"; fail=1; }
           grep -rInE '\b10\.11\.12\.[0-9]{1,3}\b' --exclude-dir=.git --exclude-dir=.github . && { echo "::error::private-range endpoint found"; fail=1; }
           exit $fail
+
+      # The dashboard server must BOOT and answer JSON — not merely byte-compile. A past release
+      # shipped a graph-server.js that compiled fine but threw "ReferenceError: sendJson is not
+      # defined" on every data route (a response helper had been stripped out of the build). node
+      # --check can't see that; only booting it can. So boot the shipped server with no brain and
+      # hit /healthz + /config.json (the route that crashed): a handled 5xx is fine, a crash is not.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Dashboard smoke — graph-server boots and answers JSON
+        run: |
+          set -e
+          PORT=8788 BIND_HOST=127.0.0.1 BRAIN_DIR=/nonexistent GIT_DIR=/nonexistent \
+            node dashboard/graph-server.js &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do
+            curl -sf http://127.0.0.1:8788/healthz >/dev/null 2>&1 && break
+            sleep 0.2
+          done
+          curl -s http://127.0.0.1:8788/healthz | grep -qx ok \
+            || { echo "::error::/healthz did not return ok — server failed to boot"; exit 1; }
+          body=$(curl -s http://127.0.0.1:8788/config.json)
+          printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{JSON.parse(s)}catch(e){console.error("::error::/config.json is not JSON (server likely crashed): "+s.slice(0,160));process.exit(1)}})' \
+            || exit 1
+          echo "dashboard boot smoke-test OK"
