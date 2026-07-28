@@ -45,8 +45,16 @@ jobs:
       # run the whole autolearn unit suite, not just pick_backend, so tests can't silently
       # rot (a stale default_readers assertion once drifted from the code undetected because CI
       # never ran this suite). Pure-Python, no DB needed.
+      # The public distribution ships WITHOUT the /tests/ trees (SHIP-MANIFEST excludes them), so
+      # this step self-skips when they're absent — it runs in full in the maintainer repo where the
+      # tests live, and is a no-op (not a failure) in the shipped distribution.
       - name: Unit test — autolearn suite
-        run: python -m unittest discover -s autolearn/tests
+        run: |
+          if [ -d autolearn/tests ]; then
+            python -m unittest discover -s autolearn/tests
+          else
+            echo "autolearn/tests not shipped in this distribution — skipping (covered by the maintainer CI)"
+          fi
 
       # Mirror install.sh's pre-migration setup (CI doesn't run install.sh). Migrations expect a
       # superuser to have already created these before `migrate.py up`: the pgvector extension
